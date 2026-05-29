@@ -146,10 +146,7 @@ namespace gbpp {
 
             if (!externalCalls.empty()) {
                 for (const auto& ext : externalCalls) {
-                    std::string c_name = ext;
-                    size_t pos = c_name.rfind("::");
-                    if (pos != std::string::npos) c_name = c_name.substr(pos + 2);
-                    emitter.emitExtern(c_name);
+                    emitter.emitExtern(sanitizeLabel(ext));
                 }
             }
 
@@ -304,12 +301,6 @@ namespace gbpp {
                 return getSizeName(op.size) + " [" + base + offStr + "]";
             }
             if (op.type == MOperandType::Label) {
-                if (!m_definedFunctions.count(op.label) && op.label.find(".L") != 0) {
-                    std::string c_name = op.label;
-                    size_t pos = c_name.rfind("::");
-                    if (pos != std::string::npos) return c_name.substr(pos + 2);
-                    return c_name;
-                }
                 return sanitizeLabel(op.label);
             }
             return "err";

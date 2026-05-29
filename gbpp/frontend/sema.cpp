@@ -740,6 +740,13 @@ namespace gbpp {
                     for (auto& p : targetFn->params) t->paramTypes.push_back(p.resolvedType);
                     t->returnType = targetFn->returnTypeResolved;
                     var->type = t;
+                    if (targetFn->attributes.count("extern")) {
+                        size_t p = targetFn->name.rfind("::");
+                        var->name = (p != std::string::npos) ? targetFn->name.substr(p + 2) : targetFn->name;
+                    }
+                    else {
+                        var->name = targetFn->name;
+                    }
                     return;
                 }
 
