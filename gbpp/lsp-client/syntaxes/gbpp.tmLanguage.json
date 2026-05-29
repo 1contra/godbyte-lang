@@ -1,0 +1,148 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "GodByte++",
+  "scopeName": "source.gbpp",
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#strings" },
+    { "include": "#keywords" },
+    { "include": "#types" },
+    { "include": "#builtins" },
+    { "include": "#functions" },
+    { "include": "#variables" },
+    { "include": "#custom_types" },
+    { "include": "#numbers" },
+    { "include": "#operators" },
+    { "include": "#punctuation" }
+  ],
+  "repository": {
+    "keywords": {
+      "patterns": [
+        {
+          "name": "keyword.control.gbpp",
+          "match": "\\b(fn|return|struct|enum|if|else|while|alias|cast|cast_bits|namespace|break|for)\\b"
+        },
+        {
+          "name": "keyword.other.gbpp",
+          "match": "\\b(owner|ref)\\b"
+        },
+        {
+          "name": "keyword.control.directive.gbpp",
+          "match": "^\\s*#import\\b"
+        }
+      ]
+    },
+    "types": {
+      "patterns": [
+        {
+          "name": "entity.name.type.gbpp",
+          "match": "\\b(u8|u16|u32|u64|i8|i16|i32|i64|f32|f64|void|bool)\\b"
+        }
+      ]
+    },
+    "builtins": {
+      "patterns": [
+        {
+          "name": "support.function.gbpp",
+          "match": "\\b(alloc|sizeof)\\b"
+        }
+      ]
+    },
+    "functions": {
+      "patterns": [
+        {
+          "name": "entity.name.function.gbpp",
+          "match": "\\b([a-zA-Z_][a-zA-Z0-9_]*)\\s*(?=\\()"
+        }
+      ]
+    },
+    "variables": {
+      "patterns": [
+        {
+          "name": "variable.other.readwrite.gbpp",
+          "match": "\\b([a-zA-Z_][a-zA-Z0-9_]*)\\s*(?=:)"
+        },
+        {
+          "name": "variable.other.property.gbpp",
+          "match": "(?<=\\.)[a-zA-Z_][a-zA-Z0-9_]*\\b"
+        },
+        {
+          "name": "variable.other.constant.gbpp",
+          "match": "(?<=::)[a-zA-Z_][a-zA-Z0-9_]*\\b"
+        }
+      ]
+    },
+    "custom_types": {
+      "patterns": [
+        {
+          "name": "entity.name.type.gbpp",
+          "match": "\\b([A-Z][a-zA-Z0-9_]*)\\b"
+        },
+        {
+          "name": "entity.name.type.gbpp",
+          "match": "(?<=:\\s*)\\b([a-zA-Z_][a-zA-Z0-9_]*)\\b"
+        }
+      ]
+    },
+    "operators": {
+      "patterns": [
+        {
+          "name": "keyword.operator.gbpp",
+          "match": "(\\+|-|\\*|/|%|==|!=|<=|>=|<|>|=|!|\\&|\\||\\^|~|<<|>>)"
+        }
+      ]
+    },
+    "punctuation": {
+      "patterns": [
+        {
+          "name": "keyword.operator.brace.curly.gbpp",
+          "match": "\\{|\\}"
+        },
+        {
+          "name": "keyword.operator.brace.round.gbpp",
+          "match": "\\(|\\)"
+        },
+        {
+          "name": "keyword.operator.brace.square.gbpp",
+          "match": "\\[|\\]"
+        },
+        {
+          "name": "punctuation.separator.gbpp",
+          "match": ",|:|\\.|;"
+        }
+      ]
+    },
+    "strings": {
+      "name": "string.quoted.double.gbpp",
+      "begin": "\"",
+      "end": "\"",
+      "patterns": [
+        {
+          "name": "constant.character.escape.gbpp",
+          "match": "\\\\."
+        }
+      ]
+    },
+    "numbers": {
+      "patterns": [
+        {
+          "name": "constant.numeric.gbpp",
+          "match": "\\b\\d+(\\.\\d+)?\\b"
+        }
+      ]
+    },
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.line.double-slash.gbpp",
+          "match": "//.*$"
+        },
+        {
+          "name": "comment.block.gbpp",
+          "begin": "/\\*",
+          "end": "\\*/"
+        }
+      ]
+    }
+  }
+}

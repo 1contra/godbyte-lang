@@ -1,0 +1,17 @@
+{
+    "iconDefinitions": {
+        "_file": {
+            "iconPath": "./images/gbpp-icon.svg"
+        },
+        "_folder": {
+            "iconPath": "./images/gbpp-icon.svg"
+        }
+    },
+    "fileExtensions": {
+        "gbpp": "_file",
+        "ir": "_file"
+    },
+    "fileNames": {},
+    "folder": "_folder",
+    "folderNames": {},
+}

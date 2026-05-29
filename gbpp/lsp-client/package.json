@@ -1,0 +1,66 @@
+{
+  "name": "godbytepp",
+  "displayName": "GodByte++ Support",
+  "version": "0.1.0",
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "activationEvents": [
+    "onLanguage:gbpp",
+    "onLanguage:gbpp-ir"
+  ],
+  "main": "./client.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "gbpp",
+        "aliases": [
+          "GodByte++",
+          "gbpp"
+        ],
+        "extensions": [
+          ".gbpp"
+        ],
+        "configuration": "./language-configuration.json",
+        "icon": {
+            "light": "images/gbpp-icon.png",
+            "dark": "images/gbpp-icon.png"
+        }
+      },
+      {
+        "id": "gbpp-ir",
+        "aliases": [
+          "GodByte++ IR",
+          "gbpp-ir"
+        ],
+        "extensions": [
+          ".ir"
+        ],
+        "configuration": "./language-configuration.json",
+        "icon": {
+            "light": "images/gbpp-icon.png",
+            "dark": "images/gbpp-icon.png"
+        }
+      }
+    ],
+    "grammars": [
+      {
+        "language": "gbpp",
+        "scopeName": "source.gbpp",
+        "path": "./syntaxes/gbpp.tmLanguage.json"
+      }
+    ],
+    "configurationDefaults": {
+      "editor.semanticTokenColorCustomizations": {
+        
+      }
+    }
+  },
+  "dependencies": {
+    "fast-xml-parser": "^5.5.6",
+    "vscode-languageclient": "^9.0.1"
+  },
+  "devDependencies": {
+    "vscode": "^1.1.37"
+  }
+}
