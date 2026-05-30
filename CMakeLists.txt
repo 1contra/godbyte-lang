@@ -8,4 +8,3 @@ endif()
 project ("gbpp")
 
 add_subdirectory ("gbpp")
-add_subdirectory ("gbsm")
