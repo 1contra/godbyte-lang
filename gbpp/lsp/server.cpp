@@ -1865,7 +1865,6 @@ namespace gbpp::lsp {
             int tokenTypeIdx = getSemanticTokenType(token.type, token.text, currentSema);
 
             if (!inMacro && token.type == TokenType::Identifier && token.text != "else") {
-
                 if (knownGenericParams.count(token.text)) {
                     tokenTypeIdx = 1;
                 }
@@ -2062,7 +2061,8 @@ namespace gbpp::lsp {
         case TokenType::At:
         case TokenType::Cast: case TokenType::CastBits:
         case TokenType::Null: case TokenType::Lib:
-        case TokenType::Struct:
+        case TokenType::Struct: case TokenType::True:
+        case TokenType::False: case TokenType::Volatile:
             return 8;
         case TokenType::HashImport:
             return 8;
