@@ -203,6 +203,7 @@ namespace gbpp {
         std::vector<Param> params;
         ParsedType returnType;
         Type* returnTypeResolved = nullptr;
+        std::unique_ptr<Type> signatureType = nullptr;
         std::unique_ptr<BlockStmt> body;
     };
 

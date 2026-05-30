@@ -343,13 +343,21 @@ namespace gbpp {
                 consume(TokenType::LBrace, "Expect '{' after methods keyword");
 
                 while (!check(TokenType::RBrace) && !isAtEnd()) {
-                    std::set<std::string> pendingAttrs = parseAttributes();
+                    try {
+                        std::set<std::string> pendingAttrs = parseAttributes();
 
-                    auto methodDecl = parseFunction();
-                    methodDecl->attributes = std::move(pendingAttrs);
-                    methodDecl->name = st->name + "_" + methodDecl->name;
+                        auto methodDecl = parseFunction();
+                        methodDecl->attributes = std::move(pendingAttrs);
+                        methodDecl->genericParams = st->genericParams;
+                        methodDecl->name = st->name + "_" + methodDecl->name;
 
-                    st->methods.push_back(std::move(methodDecl));
+                        st->methods.push_back(std::move(methodDecl));
+                    }
+                    catch (const std::runtime_error& e) {
+                        this->errors.push_back(e.what());
+                        this->hasErrors = true;
+                        synchronize();
+                    }
                 }
                 consume(TokenType::RBrace, "Expect '}' after methods block");
                 continue;
@@ -768,12 +776,6 @@ namespace gbpp {
     }
 
     std::unique_ptr<Expr> Parser::parsePrimary() {
-        if (match(TokenType::At)) {
-            auto expr = std::make_unique<SelfFieldExpr>();
-            expr->loc = previous().loc;
-            expr->fieldName = consume(TokenType::Identifier, "Expect field name after '@'").text;
-            return expr;
-        }
         if (match(TokenType::StringLiteral)) {
             auto lit = std::make_unique<StringLiteral>();
             lit->value = previous().text;
@@ -968,7 +970,8 @@ namespace gbpp {
                         }
                     }
                     else if (match(TokenType::Identifier)) {
-                        currentValue = 0;
+                        throw std::runtime_error("Line " + std::to_string(peek().loc.line) + ":" +
+                            std::to_string(peek().loc.col) + " - Enum member aliasing not yet supported. Use integer literals.");
                     }
                     else {
                         throw std::runtime_error("Line " + std::to_string(peek().loc.line) + ":" +

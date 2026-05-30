@@ -202,10 +202,10 @@ namespace gbpp {
             for (const auto& arg : actual.genericArgs) {
                 Type* argType = resolveType(arg);
                 if (argType) {
-                    mangledName += "_" + argType->name;
+                    mangledName += "$" + argType->name;
                 }
                 else {
-                    mangledName += "_" + arg.baseName;
+                    mangledName += "$" + arg.baseName;
                 }
             }
 
@@ -271,7 +271,13 @@ namespace gbpp {
                     arrSize = std::stoi(actual.arraySizeExpr);
                 }
                 catch (...) {
-                    isDynamic = true;
+                    if (m_constants.count(actual.arraySizeExpr)) {
+
+                    }
+                    else {
+                        errors.push_back("Semantic Error: Invalid array size expression '" + actual.arraySizeExpr + "'. Must be a constant integer.");
+                        isDynamic = true;
+                    }
                 }
                 baseType = new Type{
                     ScalarType::Struct,
@@ -478,11 +484,11 @@ namespace gbpp {
 
         m_instantiated_structs.push_back(std::move(inst));
 
-        std::string prefix = tmpl->name + "_";
+        std::string prefix = tmpl->name + "$";
         for (auto& [gName, gFn] : m_generic_functions) {
             if (gName.starts_with(prefix)) {
                 std::string methodName = gName.substr(prefix.length());
-                std::string mangledFnName = mangledName + "_" + methodName;
+                std::string mangledFnName = mangledName + "$" + methodName;
 
                 if (!m_functions.count(mangledFnName)) {
                     instantiateFunction(gFn, args, mangledFnName);
@@ -494,6 +500,11 @@ namespace gbpp {
     }
 
     void Sema::checkFunction(FunctionDecl& fn) {
+        fn.signatureType = std::make_unique<Type>(Type{ ScalarType::FunctionPtr, fn.name + "_sig", 8 });
+        for (auto& param : fn.params) {
+            param.resolvedType = resolveType(param.parsedType);
+            fn.signatureType->paramTypes.push_back(param.resolvedType);
+        }
         fn.returnTypeResolved = resolveType(fn.returnType);
         if (!fn.returnTypeResolved) fn.returnTypeResolved = &TypeVoid;
 
@@ -565,6 +576,8 @@ namespace gbpp {
         else if (auto r = dynamic_cast<ReturnStmt*>(&stmt)) {
             if (r->value) {
                 checkExpr(*r->value);
+
+                if (!r->value->type) r->value->type = &TypeVoid;
 
                 if (m_currentFunctionReturnType->scalar == ScalarType::Void) {
                     error(r->loc, "Function returning 'void' cannot return a value.");
@@ -672,9 +685,16 @@ namespace gbpp {
                 return;
             }
 
+            if (!m_structs.count(structInit->type->name)) {
+                error(structInit->loc, "Struct definition not fully resolved: " + structInit->type->name);
+                structInit->type = &TypeVoid;
+                return;
+            }
+
             StructDecl* st = m_structs[structInit->type->name];
             for (auto& initField : structInit->fields) {
                 checkExpr(*initField.value);
+                if (!initField.value->type) initField.value->type = &TypeVoid;
                 bool found = false;
                 for (auto& f : st->fields) {
                     if (f.name == initField.name) {
@@ -706,6 +726,7 @@ namespace gbpp {
         }
         else if (auto un = dynamic_cast<UnaryExpr*>(&expr)) {
             checkExpr(*un->operand);
+            if (!un->operand->type) un->operand->type = &TypeVoid;
             un->type = un->operand->type;
         }
         else if (auto addr = dynamic_cast<AddrOfExpr*>(&expr)) {
@@ -776,12 +797,15 @@ namespace gbpp {
         }
         else if (auto deref = dynamic_cast<DerefExpr*>(&expr)) {
             checkExpr(*deref->operand);
+            if (!deref->operand->type) deref->operand->type = &TypeVoid;
+
             if (!deref->operand->type->isPointer()) {
                 error(deref->loc, "Cannot dereference non-pointer type.");
                 deref->type = &TypeVoid;
                 return;
             }
             deref->type = deref->operand->type->base;
+            if (!deref->type) deref->type = &TypeVoid;
         }
         else if (auto arr = dynamic_cast<ArrayAccessExpr*>(&expr)) {
             checkExpr(*arr->array);
@@ -828,14 +852,20 @@ namespace gbpp {
         }
         else if (auto mem = dynamic_cast<MemberExpr*>(&expr)) {
             checkExpr(*mem->object);
+            if (!mem->object->type) mem->object->type = &TypeVoid;
 
             Type* baseType = mem->object->type;
 
             if (baseType && baseType->isPointer()) {
                 baseType = baseType->base;
+                if (!baseType) {
+                    error(mem->loc, "Invalid pointer dereference for member access.");
+                    mem->type = &TypeVoid;
+                    return;
+                }
             }
 
-            if (baseType->scalar != ScalarType::Struct) {
+            if (!baseType || baseType->scalar != ScalarType::Struct) {
                 error(mem->loc, "Dot access on non-struct type.");
                 mem->type = &TypeVoid;
                 return;
@@ -859,172 +889,187 @@ namespace gbpp {
         else if (auto assign = dynamic_cast<AssignmentExpr*>(&expr)) {
             checkExpr(*assign->target);
             checkExpr(*assign->value);
+
+            if (!assign->target->type) assign->target->type = &TypeVoid;
+            if (!assign->value->type) assign->value->type = &TypeVoid;
+
             assign->type = assign->target->type;
 
             if (assign->op != TokenType::Equal && dynamic_cast<IntLiteral*>(assign->value.get())) {
-                assign->value->type = assign->target->type;
+                Type* t = assign->target->type;
+                if (t && (t->isInteger() || t->isFloatingPoint() || t->isPointer())) {
+                    assign->value->type = t;
+                }
+                else {
+                    error(assign->loc, "Cannot perform arithmetic assignment on non-numeric type: " + (t ? t->toString() : "unknown"));
+                }
+
+                bool isAlloc = dynamic_cast<AllocExpr*>(assign->value.get()) != nullptr;
+
+                if (assign->target->type && assign->target->type->isPointer() && isAlloc) {
+
+                }
+
+                else if (assign->target->type && assign->value->type && *assign->target->type != *assign->value->type) {
+                    error(assign->loc, "Type mismatch in assignment. Cannot assign " +
+                        assign->value->type->toString() + " to " + assign->target->type->toString());
+                }
             }
+            else if (auto bin = dynamic_cast<BinaryExpr*>(&expr)) {
+                checkExpr(*bin->left);
+                checkExpr(*bin->right);
 
-            bool isAlloc = dynamic_cast<AllocExpr*>(assign->value.get()) != nullptr;
+                if (bin->op == TokenType::EqualEqual ||
+                    bin->op == TokenType::NotEqual ||
+                    bin->op == TokenType::LT ||
+                    bin->op == TokenType::GT ||
+                    bin->op == TokenType::LE ||
+                    bin->op == TokenType::GE) {
 
-            if (assign->target->type && assign->target->type->isPointer() && isAlloc) {
-
+                    bin->type = &TypeBool;
+                }
+                else {
+                    bin->type = bin->left->type;
+                }
             }
+            else if (auto call = dynamic_cast<CallExpr*>(&expr)) {
+                if (auto mem = dynamic_cast<MemberExpr*>(call->callee.get())) {
+                    checkExpr(*mem->object);
 
-            else if (assign->target->type && assign->value->type && *assign->target->type != *assign->value->type) {
-                error(assign->loc, "Type mismatch in assignment. Cannot assign " +
-                    assign->value->type->toString() + " to " + assign->target->type->toString());
-            }
-        }
-        else if (auto bin = dynamic_cast<BinaryExpr*>(&expr)) {
-            checkExpr(*bin->left);
-            checkExpr(*bin->right);
+                    if (mem->object->type && (mem->object->type->scalar == ScalarType::Struct || mem->object->type->isPointer())) {
+                        Type* baseType = mem->object->type;
+                        bool isPtr = baseType->isPointer();
+                        std::string structName = isPtr ? baseType->base->name : baseType->name;
+                        std::string methodName = structName + "_" + mem->memberName;
 
-            if (bin->op == TokenType::EqualEqual ||
-                bin->op == TokenType::NotEqual ||
-                bin->op == TokenType::LT ||
-                bin->op == TokenType::GT ||
-                bin->op == TokenType::LE ||
-                bin->op == TokenType::GE) {
+                        if (m_functions.count(methodName)) {
+                            FunctionDecl* fn = m_functions[methodName];
 
-                bin->type = &TypeBool;
-            }
-            else {
-                bin->type = bin->left->type;
-            }
-        }
-        else if (auto call = dynamic_cast<CallExpr*>(&expr)) {
-            if (auto mem = dynamic_cast<MemberExpr*>(call->callee.get())) {
-                checkExpr(*mem->object);
+                            auto funcVar = std::make_unique<VarExpr>();
+                            funcVar->loc = mem->loc;
+                            funcVar->name = methodName;
 
-                if (mem->object->type && (mem->object->type->scalar == ScalarType::Struct || mem->object->type->isPointer())) {
-                    Type* baseType = mem->object->type;
-                    bool isPtr = baseType->isPointer();
-                    std::string structName = isPtr ? baseType->base->name : baseType->name;
-                    std::string methodName = structName + "_" + mem->memberName;
+                            std::unique_ptr<Expr> selfArg = std::move(mem->object);
 
-                    if (m_functions.count(methodName)) {
-                        FunctionDecl* fn = m_functions[methodName];
-
-                        auto funcVar = std::make_unique<VarExpr>();
-                        funcVar->loc = mem->loc;
-                        funcVar->name = methodName;
-
-                        std::unique_ptr<Expr> selfArg = std::move(mem->object);
-
-                        if (!fn->params.empty()) {
-                            Type* expectedSelfType = resolveType(fn->params[0].parsedType);
-                            if (expectedSelfType && expectedSelfType->isPointer() && !isPtr) {
-                                auto addrOf = std::make_unique<AddrOfExpr>();
-                                addrOf->loc = selfArg->loc;
-                                addrOf->operand = std::move(selfArg);
-                                selfArg = std::move(addrOf);
+                            if (!fn->params.empty()) {
+                                Type* expectedSelfType = resolveType(fn->params[0].parsedType);
+                                if (expectedSelfType && expectedSelfType->isPointer() && !isPtr) {
+                                    auto addrOf = std::make_unique<AddrOfExpr>();
+                                    addrOf->loc = selfArg->loc;
+                                    addrOf->operand = std::move(selfArg);
+                                    selfArg = std::move(addrOf);
+                                }
+                                else if (expectedSelfType && !expectedSelfType->isPointer() && isPtr) {
+                                    auto deref = std::make_unique<DerefExpr>();
+                                    deref->loc = selfArg->loc;
+                                    deref->operand = std::move(selfArg);
+                                    selfArg = std::move(deref);
+                                }
                             }
-                            else if (expectedSelfType && !expectedSelfType->isPointer() && isPtr) {
-                                auto deref = std::make_unique<DerefExpr>();
-                                deref->loc = selfArg->loc;
-                                deref->operand = std::move(selfArg);
-                                selfArg = std::move(deref);
-                            }
+
+                            call->args.insert(call->args.begin(), std::move(selfArg));
+                            call->callee = std::move(funcVar);
+                        }
+                    }
+                }
+
+                if (auto var = dynamic_cast<VarExpr*>(call->callee.get())) {
+                    bool isFunctionCall = false;
+
+                    std::string mangled = var->name;
+                    size_t pos = 0;
+                    while ((pos = mangled.find("::", pos)) != std::string::npos) {
+                        mangled.replace(pos, 2, "_");
+                        pos += 1;
+                    }
+                    std::string baseName = var->name;
+                    auto rpos = baseName.rfind("::");
+                    if (rpos != std::string::npos) baseName = baseName.substr(rpos + 2);
+
+                    FunctionDecl* targetFn = nullptr;
+                    if (m_functions.count(var->name)) targetFn = m_functions[var->name];
+                    else if (m_functions.count(mangled)) targetFn = m_functions[mangled];
+                    else if (m_functions.count(baseName)) targetFn = m_functions[baseName];
+
+                    if (targetFn) {
+                        if (call->args.size() != targetFn->params.size()) error(call->loc, "Arg count mismatch");
+                        for (auto& arg : call->args) {
+                            checkExpr(*arg);
+                            if (!arg->type) arg->type = &TypeVoid;
                         }
 
-                        call->args.insert(call->args.begin(), std::move(selfArg));
-                        call->callee = std::move(funcVar);
-                    }
-                }
-            }
-
-            if (auto var = dynamic_cast<VarExpr*>(call->callee.get())) {
-                bool isFunctionCall = false;
-
-                std::string mangled = var->name;
-                size_t pos = 0;
-                while ((pos = mangled.find("::", pos)) != std::string::npos) {
-                    mangled.replace(pos, 2, "_");
-                    pos += 1;
-                }
-                std::string baseName = var->name;
-                auto rpos = baseName.rfind("::");
-                if (rpos != std::string::npos) baseName = baseName.substr(rpos + 2);
-
-                FunctionDecl* targetFn = nullptr;
-                if (m_functions.count(var->name)) targetFn = m_functions[var->name];
-                else if (m_functions.count(mangled)) targetFn = m_functions[mangled];
-                else if (m_functions.count(baseName)) targetFn = m_functions[baseName];
-
-                if (targetFn) {
-                    if (call->args.size() != targetFn->params.size()) error(call->loc, "Arg count mismatch");
-                    for (auto& arg : call->args) checkExpr(*arg);
-                    call->type = targetFn->returnTypeResolved;
-                    isFunctionCall = true;
-                    if (targetFn->attributes.count("extern")) {
-                        size_t p = targetFn->name.rfind("::");
-                        var->name = (p != std::string::npos) ? targetFn->name.substr(p + 2) : targetFn->name;
-                    }
-                    else {
-                        var->name = targetFn->name;
-                    }
-                }
-                else if (!lookupVariable(var->name)) {
-                    error(call->loc, "Undeclared function: " + var->name);
-                    for (auto& arg : call->args) checkExpr(*arg);
-                    call->type = &TypeVoid;
-                    isFunctionCall = true;
-                }
-
-                if (isFunctionCall) {
-                    if ((var->name == "free" || var->name.ends_with("::free") || var->name.ends_with("_free")) && call->args.size() == 1) {
-                        Expr* argToFree = call->args[0].get();
-                        while (auto castExpr = dynamic_cast<CastExpr*>(argToFree)) {
-                            argToFree = castExpr->operand.get();
+                        call->type = targetFn->returnTypeResolved ? targetFn->returnTypeResolved : &TypeVoid;
+                        isFunctionCall = true;
+                        if (targetFn->attributes.count("extern")) {
+                            size_t p = targetFn->name.rfind("::");
+                            var->name = (p != std::string::npos) ? targetFn->name.substr(p + 2) : targetFn->name;
                         }
+                        else {
+                            var->name = targetFn->name;
+                        }
+                    }
+                    else if (!lookupVariable(var->name)) {
+                        error(call->loc, "Undeclared function: " + var->name);
+                        for (auto& arg : call->args) checkExpr(*arg);
+                        call->type = &TypeVoid;
+                        isFunctionCall = true;
+                    }
 
-                        if (auto argVar = dynamic_cast<VarExpr*>(argToFree)) {
-                            for (Scope* s = m_currentScope; s; s = s->parent) {
-                                if (s->variables.count(argVar->name)) {
-                                    s->freedVars.insert(argVar->name);
-                                    break;
+                    if (isFunctionCall) {
+                        if (targetFn && (targetFn->name == "free" || targetFn->attributes.count("free")) && call->args.size() == 1) {
+                            Expr* argToFree = call->args[0].get();
+                            while (auto castExpr = dynamic_cast<CastExpr*>(argToFree)) {
+                                argToFree = castExpr->operand.get();
+                            }
+
+                            if (auto argVar = dynamic_cast<VarExpr*>(argToFree)) {
+                                for (Scope* s = m_currentScope; s; s = s->parent) {
+                                    if (s->variables.count(argVar->name)) {
+                                        s->freedVars.insert(argVar->name);
+                                        break;
+                                    }
                                 }
                             }
                         }
+                        return;
                     }
+                }
+
+                checkExpr(*call->callee);
+
+                Type* calleeType = call->callee->type;
+                if (!calleeType || calleeType->scalar != ScalarType::FunctionPtr) {
+                    error(call->loc, "Expression is not callable.");
+                    call->type = &TypeVoid;
                     return;
                 }
-            }
 
-            checkExpr(*call->callee);
-
-            Type* calleeType = call->callee->type;
-            if (!calleeType || calleeType->scalar != ScalarType::FunctionPtr) {
-                error(call->loc, "Expression is not callable.");
-                call->type = &TypeVoid;
-                return;
-            }
-
-            if (call->args.size() != calleeType->paramTypes.size()) {
-                error(call->loc, "Function pointer expects " + std::to_string(calleeType->paramTypes.size()) + " args.");
-            }
-
-            for (size_t i = 0; i < call->args.size(); ++i) {
-                checkExpr(*call->args[i]);
-            }
-            call->type = calleeType->returnType;
-        }
-        else if (auto cast = dynamic_cast<CastExpr*>(&expr)) {
-            checkExpr(*cast->operand);
-            cast->targetType = resolveType(cast->parsedTargetType);
-            if (!cast->targetType) {
-                error(cast->loc, "Unknown cast type: " + cast->parsedTargetType.toString());
-                expr.type = &TypeVoid;
-                return;
-            }
-
-            if (cast->castKind == CastKind::Bits) {
-                if (cast->targetType->sizeBytes != cast->operand->type->sizeBytes) {
-                    error(cast->loc, "cast_bits requires same size types.");
+                if (call->args.size() != calleeType->paramTypes.size()) {
+                    error(call->loc, "Function pointer expects " + std::to_string(calleeType->paramTypes.size()) + " args.");
                 }
+
+                for (size_t i = 0; i < call->args.size(); ++i) {
+                    checkExpr(*call->args[i]);
+                }
+                call->type = calleeType->returnType;
             }
-            expr.type = cast->targetType;
+            else if (auto cast = dynamic_cast<CastExpr*>(&expr)) {
+                checkExpr(*cast->operand);
+                if (!cast->operand->type) cast->operand->type = &TypeVoid;
+                cast->targetType = resolveType(cast->parsedTargetType);
+                if (!cast->targetType) {
+                    error(cast->loc, "Unknown cast type: " + cast->parsedTargetType.toString());
+                    expr.type = &TypeVoid;
+                    return;
+                }
+
+                if (cast->castKind == CastKind::Bits) {
+                    if (cast->targetType->sizeBytes != cast->operand->type->sizeBytes) {
+                        error(cast->loc, "cast_bits requires same size types.");
+                    }
+                }
+                expr.type = cast->targetType;
+            }
         }
     }
 
@@ -1039,6 +1084,11 @@ namespace gbpp {
         delete old;
     }
     bool Sema::declareVariable(const std::string& name, Type* type, SourceLoc loc, const std::set<std::string>& attrs) {
+        if (m_currentScope->variables.count(name)) {
+            error(loc, "Redeclaration of variable '" + name + "' in the current scope.");
+            return false;
+        }
+
         m_currentScope->variables[name] = type;
 
         if (type->name.starts_with("owner") && attrs.find("nofree") == attrs.end()) {
@@ -1047,6 +1097,11 @@ namespace gbpp {
         return true;
     }
     bool Sema::declareVariable(const std::string& name, Type* type, SourceLoc loc) {
+        if (m_currentScope->variables.count(name)) {
+            error(loc, "Redeclaration of variable '" + name + "' in the current scope.");
+            return false;
+        }
+
         m_currentScope->variables[name] = type;
         return true;
     }
