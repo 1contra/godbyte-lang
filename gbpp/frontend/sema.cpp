@@ -248,6 +248,11 @@ namespace gbpp {
             return nullptr;
         }
 
+        bool isVolatile = actual.hasModifier(TypeModifier::Volatile);
+
+        baseType = new Type(*baseType);
+        baseType->isVolatile = isVolatile;
+
         if (actual.isArray) {
             if (actual.arraySizeExpr.empty()) {
                 baseType = new Type{
@@ -255,7 +260,8 @@ namespace gbpp {
                     actual.toString(),
                     8,
                     false, false, true,
-                    baseType
+                    baseType,
+                    isVolatile
                 };
             }
             else {
@@ -272,12 +278,15 @@ namespace gbpp {
                     actual.toString(),
                     isDynamic ? 0 : (baseType->sizeBytes * arrSize),
                     false, false, true,
-                    baseType
+                    baseType,
+                    isVolatile
                 };
             }
         }
 
         for (auto it = actual.modifiers.rbegin(); it != actual.modifiers.rend(); ++it) {
+            if (*it == TypeModifier::Volatile) continue;
+
             baseType = new Type{
                 ScalarType::Pointer,
                 actual.toString(),
@@ -557,7 +566,7 @@ namespace gbpp {
             if (r->value) {
                 checkExpr(*r->value);
 
-                if (m_currentFunctionReturnType == &TypeVoid) {
+                if (m_currentFunctionReturnType->scalar == ScalarType::Void) {
                     error(r->loc, "Function returning 'void' cannot return a value.");
                 }
                 else {
@@ -569,7 +578,7 @@ namespace gbpp {
                 }
             }
             else {
-                if (m_currentFunctionReturnType != &TypeVoid) {
+                if (m_currentFunctionReturnType->scalar != ScalarType::Void) {
                     error(r->loc, "Function must return a value of type " + m_currentFunctionReturnType->toString());
                 }
             }
@@ -709,6 +718,9 @@ namespace gbpp {
             ParsedType pt;
             pt.baseName = addr->operand->type->name;
             pt.modifiers.push_back(TypeModifier::Ref);
+
+            if (addr->operand->type->isVolatile) pt.modifiers.push_back(TypeModifier::Volatile);
+
             addr->type = resolveType(pt);
         }
         else if (auto var = dynamic_cast<VarExpr*>(&expr)) {

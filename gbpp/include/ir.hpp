@@ -49,6 +49,7 @@ namespace gbpp {
 
         std::vector<int> args;
         std::vector<int> argBytes;
+        bool isVolatile = false;
 
         std::string getType() const {
             if (bytes == 1) return "i8";
@@ -98,9 +99,9 @@ namespace gbpp {
                     if (src1 != -1) return "ret " + typeStr + " v" + to_string(src1);
                     return "ret void";
                 case OpCode::LOAD:
-                    return destStr() + "load " + typeStr + " from [v" + to_string(src1) + "]";
+                    return destStr() + (isVolatile ? "volatile " : "") + "load " + typeStr + " from [v" + to_string(src1) + "]";
                 case OpCode::STORE:
-                    return "store " + getType() + " " + op2() + " into [v" + to_string(src1) + "]";
+                    return std::string(isVolatile ? "volatile " : "") + "store " + getType() + " " + op2() + " into [v" + to_string(src1) + "]";
                 case OpCode::ALLOC:
                     return destStr() + "alloc " + to_string(imm) + " bytes";
                 case OpCode::CAST:

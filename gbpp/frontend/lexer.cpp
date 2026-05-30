@@ -112,6 +112,7 @@ namespace gbpp {
             {"cast", TokenType::Cast},
             {"cast_bits", TokenType::CastBits},
             {"const", TokenType::Const},
+            {"volatile", TokenType::Volatile},
         };
 
         if (keywords.count(text)) {

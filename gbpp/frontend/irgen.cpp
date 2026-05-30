@@ -387,7 +387,9 @@ namespace gbpp {
 
             if (m_locals.count(var->name)) {
                 if (m_stackPrimitives.count(var->name)) {
-                    emit({ OpCode::LOAD, res, m_locals[var->name], -1, 0, size });
+                    Instruction inst = { OpCode::LOAD, res, m_locals[var->name], -1, 0, size };
+                    if (var->type && var->type->isVolatile) inst.isVolatile = true;
+                    emit(inst);
                 }
                 else {
                     emit({ OpCode::MOV, res, m_locals[var->name], -1, 0, size });
@@ -448,8 +450,13 @@ namespace gbpp {
 
             int addr = m_currentFunc->allocVReg();
             emit({ OpCode::ADD, addr, base, scaledIndex });
+
             int res = m_currentFunc->allocVReg();
-            emit({ OpCode::LOAD, res, addr, -1, 0, elementSize });
+
+            Instruction inst = { OpCode::LOAD, res, addr, -1, 0, elementSize };
+            if (arr->type && arr->type->isVolatile) inst.isVolatile = true;
+            emit(inst);
+
             return res;
         }
         else if (auto alloc = dynamic_cast<const AllocExpr*>(&expr)) {
@@ -527,14 +534,22 @@ namespace gbpp {
 
             int res = m_currentFunc->allocVReg();
             int size = (mem->type) ? mem->type->sizeBytes : 8;
-            emit({ OpCode::LOAD, res, addr, -1, 0, size });
+
+            Instruction inst = { OpCode::LOAD, res, addr, -1, 0, size };
+            if (mem->type && mem->type->isVolatile) inst.isVolatile = true;
+            emit(inst);
+
             return res;
         }
         else if (auto deref = dynamic_cast<const DerefExpr*>(&expr)) {
             int addr = genExpr(*deref->operand);
             int res = m_currentFunc->allocVReg();
             int size = deref->type ? deref->type->sizeBytes : 8;
-            emit({ OpCode::LOAD, res, addr, -1, 0, size });
+
+            Instruction inst = { OpCode::LOAD, res, addr, -1, 0, size };
+            if (deref->type && deref->type->isVolatile) inst.isVolatile = true;
+            emit(inst);
+
             return res;
         }
         else if (auto assign = dynamic_cast<const AssignmentExpr*>(&expr)) {
@@ -571,11 +586,15 @@ namespace gbpp {
                 int finalVal = val;
                 if (assign->op != TokenType::Equal) {
                     int curr = m_currentFunc->allocVReg();
-                    emit({ OpCode::LOAD, curr, addr, -1, 0, size });
+                    Instruction loadInst = { OpCode::LOAD, curr, addr, -1, 0, size };
+                    if (assignMem->type && assignMem->type->isVolatile) loadInst.isVolatile = true;
+                    emit(loadInst);
                     finalVal = getFinalVal(curr);
                 }
 
-                emit({ OpCode::STORE, -1, addr, finalVal, 0, size });
+                Instruction storeInst = { OpCode::STORE, -1, addr, finalVal, 0, size };
+                if (assignMem->type && assignMem->type->isVolatile) storeInst.isVolatile = true;
+                emit(storeInst);
                 return finalVal;
             }
             if (auto assignArr = dynamic_cast<const ArrayAccessExpr*>(assign->target.get())) {
@@ -598,11 +617,15 @@ namespace gbpp {
                 int finalVal = val;
                 if (assign->op != TokenType::Equal) {
                     int curr = m_currentFunc->allocVReg();
-                    emit({ OpCode::LOAD, curr, addr, -1, 0, size });
+                    Instruction loadInst = { OpCode::LOAD, curr, addr, -1, 0, size };
+                    if (assignArr->type && assignArr->type->isVolatile) loadInst.isVolatile = true;
+                    emit(loadInst);
                     finalVal = getFinalVal(curr);
                 }
 
-                emit({ OpCode::STORE, -1, addr, finalVal, 0, size });
+                Instruction storeInst = { OpCode::STORE, -1, addr, finalVal, 0, size };
+                if (assignArr->type && assignArr->type->isVolatile) storeInst.isVolatile = true;
+                emit(storeInst);
                 return finalVal;
             }
             if (auto assignVar = dynamic_cast<const VarExpr*>(assign->target.get())) {
@@ -615,7 +638,9 @@ namespace gbpp {
                 if (assign->op != TokenType::Equal) {
                     int curr = m_currentFunc->allocVReg();
                     if (m_stackPrimitives.count(assignVar->name)) {
-                        emit({ OpCode::LOAD, curr, m_locals[assignVar->name], -1, 0, storeSize });
+                        Instruction loadInst = { OpCode::LOAD, curr, m_locals[assignVar->name], -1, 0, storeSize };
+                        if (assignVar->type && assignVar->type->isVolatile) loadInst.isVolatile = true;
+                        emit(loadInst);
                     }
                     else {
                         emit({ OpCode::MOV, curr, m_locals[assignVar->name], -1, 0, storeSize });
@@ -623,7 +648,11 @@ namespace gbpp {
                     finalVal = getFinalVal(curr);
                 }
 
-                if (m_stackPrimitives.count(assignVar->name)) emit({ OpCode::STORE, -1, m_locals[assignVar->name], finalVal, 0, storeSize });
+                if (m_stackPrimitives.count(assignVar->name)) {
+                    Instruction storeInst = { OpCode::STORE, -1, m_locals[assignVar->name], finalVal, 0, storeSize };
+                    if (assignVar->type && assignVar->type->isVolatile) storeInst.isVolatile = true;
+                    emit(storeInst);
+                }
                 else emit({ OpCode::MOV, m_locals[assignVar->name], finalVal, -1, 0, storeSize });
                 return finalVal;
             }
@@ -634,11 +663,15 @@ namespace gbpp {
                 int finalVal = val;
                 if (assign->op != TokenType::Equal) {
                     int curr = m_currentFunc->allocVReg();
-                    emit({ OpCode::LOAD, curr, addr, -1, 0, size });
+                    Instruction loadInst = { OpCode::LOAD, curr, addr, -1, 0, size };
+                    if (assignDeref->type && assignDeref->type->isVolatile) loadInst.isVolatile = true;
+                    emit(loadInst);
                     finalVal = getFinalVal(curr);
                 }
 
-                emit({ OpCode::STORE, -1, addr, finalVal, 0, size });
+                Instruction storeInst = { OpCode::STORE, -1, addr, finalVal, 0, size };
+                if (assignDeref->type && assignDeref->type->isVolatile) storeInst.isVolatile = true;
+                emit(storeInst);
                 return finalVal;
             }
         }
@@ -980,7 +1013,9 @@ namespace gbpp {
 
 
 
-            auto hasSideEffects = [](OpCode op) {
+            auto hasSideEffects = [](const Instruction& inst) {
+                if (inst.isVolatile) return true;
+                OpCode op = inst.op;
                 return op == OpCode::STORE || op == OpCode::STORE_LOCAL ||
                     op == OpCode::CALL || op == OpCode::RET ||
                     op == OpCode::JMP || op == OpCode::JMP_FALSE ||
@@ -991,7 +1026,7 @@ namespace gbpp {
                 return op == OpCode::CMP_EQ || op == OpCode::CMP_NE ||
                     op == OpCode::CMP_LT || op == OpCode::CMP_GT ||
                     op == OpCode::CMP_LE || op == OpCode::CMP_GE;
-                };
+            };
 
             for (auto& fn : mod.functions) {
                 bool changed = true;
@@ -1383,7 +1418,7 @@ namespace gbpp {
                                     knownAlias = true;
                                 }
 
-                                if (knownAlias) {
+                                if (knownAlias && !inst.isVolatile) {
                                     if (lastStoreIdx[base].count(offset)) {
                                         if (memStateSize[base].count(offset) && memStateSize[base][offset] == inst.bytes) {
                                             int deadIdx = lastStoreIdx[base][offset];
@@ -1446,7 +1481,7 @@ namespace gbpp {
                                     knownAlias = true;
                                 }
 
-                                bool canForward = knownAlias && memStateSize[base].count(offset) && memStateSize[base][offset] == inst.bytes;
+                                bool canForward = knownAlias && !inst.isVolatile && memStateSize[base].count(offset) && memStateSize[base][offset] == inst.bytes;
 
                                 if (canForward && memStateReg[base].count(offset)) {
                                     inst.op = OpCode::MOV;
@@ -1493,7 +1528,7 @@ namespace gbpp {
                                 }
                             }
 
-                            if (inst.dest != -1 && useCounts[inst.dest] == 0 && !hasSideEffects(inst.op)) {
+                            if (inst.dest != -1 && useCounts[inst.dest] == 0 && !hasSideEffects(inst)) {
                                 constants.erase(inst.dest);
                                 aliases.erase(inst.dest);
                                 ptrBase.erase(inst.dest);
@@ -1519,7 +1554,7 @@ namespace gbpp {
                             if (inst.dest != -1) {
                                 if (lastRegDefIdx.count(inst.dest)) {
                                     int deadIdx = lastRegDefIdx[inst.dest];
-                                    if (!deadInsts[deadIdx] && !hasSideEffects(newInsts[deadIdx].op)) {
+                                    if (!deadInsts[deadIdx] && !hasSideEffects(newInsts[deadIdx])) {
                                         deadInsts[deadIdx] = true;
                                         changed = true;
                                     }
@@ -1631,6 +1666,11 @@ namespace gbpp {
                                 int ptrReg = -1;
                                 int valReg = -1;
 
+                                if (inst.isVolatile) {
+                                    markEscape(inst.src1); markEscape(inst.src2); markEscape(inst.dest);
+                                    continue;
+                                }
+
                                 if (rootBase.count(inst.dest)) { ptrReg = inst.dest; valReg = inst.src1; }
                                 else if (inst.src1 != -1 && rootBase.count(inst.src1)) { ptrReg = inst.src1; valReg = inst.src2 != -1 ? inst.src2 : inst.dest; }
                                 else if (inst.src2 != -1 && rootBase.count(inst.src2)) { ptrReg = inst.src2; valReg = inst.src1; }
@@ -1652,6 +1692,12 @@ namespace gbpp {
                             }
                             if (inst.op == OpCode::LOAD) {
                                 int ptrReg = inst.src1;
+
+                                if (inst.isVolatile) {
+                                    markEscape(inst.src1);
+                                    continue;
+                                }
+
                                 if (ptrReg != -1 && rootBase.count(ptrReg)) {
                                     int base = rootBase[ptrReg];
                                     sroaAccesses[base].push_back({ rootOffset[ptrReg], inst.bytes });

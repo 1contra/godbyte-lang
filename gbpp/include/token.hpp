@@ -26,7 +26,7 @@ namespace gbpp {
         U8, U16, U32, U64,
         I8, I16, I32, I64,
         F32, F64, Void, Bool,
-        Const,
+        Const, Volatile,
 
         Ld8, Ld16, Ld32, Ld64,
         St8, St16, St32, St64,

@@ -566,7 +566,7 @@ namespace gbpp {
             std::map<int, std::pair<int, int>> foldOffsets;
             for (const auto& block : fn.blocks) {
                 for (const auto& inst : block->instructions) {
-                    if (inst.op == OpCode::LOAD || inst.op == OpCode::STORE) {
+                    if ((inst.op == OpCode::LOAD || inst.op == OpCode::STORE) && !inst.isVolatile) {
                         int baseReg = inst.src1;
                         if (defs.count(baseReg) && useCounts[baseReg] == 1) {
                             const Instruction* defInst = defs[baseReg];
@@ -585,7 +585,7 @@ namespace gbpp {
                         int srcReg = inst.src1;
                         if (defs.count(srcReg) && useCounts[srcReg] == 1) {
                             const Instruction* defInst = defs[srcReg];
-                            if (defInst->op == OpCode::LOAD) {
+                            if (defInst->op == OpCode::LOAD && !defInst->isVolatile) {
                                 foldLoads[srcReg] = defInst;
                             }
                         }

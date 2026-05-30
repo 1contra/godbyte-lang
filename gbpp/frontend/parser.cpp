@@ -94,6 +94,9 @@ namespace gbpp {
             else if (match(TokenType::Ref)) {
                 pt.modifiers.push_back(TypeModifier::Ref);
             }
+            else if (match(TokenType::Volatile)) {
+                pt.modifiers.push_back(TypeModifier::Volatile);
+            }
             else {
                 break;
             }
@@ -164,6 +167,7 @@ namespace gbpp {
         while (true) {
             if (p.match(TokenType::Owner)) typeName += "owner ";
             else if (p.match(TokenType::Ref)) typeName += "ref ";
+            else if (p.match(TokenType::Volatile)) typeName += "volatile ";
             else break;
         }
 

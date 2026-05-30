@@ -8,7 +8,7 @@
 
 namespace gbpp {
 
-    enum class TypeModifier { None, Owner, Ref };
+    enum class TypeModifier { None, Owner, Ref, Volatile};
 
     struct ParsedType {
         std::string baseName;
@@ -45,6 +45,7 @@ namespace gbpp {
             for (auto mod : modifiers) {
                 if (mod == TypeModifier::Owner) res += "owner ";
                 else if (mod == TypeModifier::Ref) res += "ref ";
+                else if (mod == TypeModifier::Volatile) res += "volatile ";
             }
 
             res += baseName;
