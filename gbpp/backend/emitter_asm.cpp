@@ -6,12 +6,11 @@ namespace gbpp {
         std::stringstream ss;
 
         std::string getRegName(int id, int bytes) {
-            static const char* r64[] = { "rax","rcx","rdx","rbx","rsi","rdi","r8","r9","r10","r11","r12","r13","r14","r15" };
-            static const char* r32[] = { "eax","ecx","edx","ebx","esi","edi","r8d","r9d","r10d","r11d","r12d","r13d","r14d","r15d" };
-            static const char* r16[] = { "ax","cx","dx","bx","si","di","r8w","r9w","r10w","r11w","r12w","r13w","r14w","r15w" };
-            static const char* r8[] = { "al","cl","dl","bl","sil","dil","r8b","r9b","r10b","r11b","r12b","r13b","r14b","r15b" };
-            if (id == 14) return (bytes == 8) ? "rbp" : "ebp";
-            if (id == 15) return (bytes == 8) ? "rsp" : "esp";
+            static const char* r64[] = { "rax","rcx","rdx","rbx","rsp","rbp","rsi","rdi","r8","r9","r10","r11","r12","r13","r14","r15" };
+            static const char* r32[] = { "eax","ecx","edx","ebx","esp","ebp","esi","edi","r8d","r9d","r10d","r11d","r12d","r13d","r14d","r15d" };
+            static const char* r16[] = { "ax","cx","dx","bx","sp","bp","si","di","r8w","r9w","r10w","r11w","r12w","r13w","r14w","r15w" };
+            static const char* r8[] = { "al","cl","dl","bl","spl","bpl","sil","dil","r8b","r9b","r10b","r11b","r12b","r13b","r14b","r15b" };
+
             if (bytes == 8) return r64[id];
             if (bytes == 4) return r32[id];
             if (bytes == 2) return r16[id];

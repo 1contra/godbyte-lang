@@ -39,9 +39,9 @@ namespace gbpp {
         bool w = (dst.size == 8);
 
         if (dst.isReg() && src.isReg()) {
-            emitRex(buf, w, src.reg, dst.reg);
-            buf.emit8(dst.size == 1 ? (opMR - 1) : opRM);
-            buf.emit8(0xC0 | ((src.reg & 7) << 3) | (dst.reg & 7));
+            emitRex(buf, w, dst.reg, src.reg);
+            buf.emit8(dst.size == 1 ? (opRM - 1) : opRM);
+            buf.emit8(0xC0 | ((dst.reg & 7) << 3) | (src.reg & 7));
         }
         else if (dst.isReg() && src.isMem()) {
             emitRex(buf, w, dst.reg, src.mem.baseReg);
@@ -55,14 +55,18 @@ namespace gbpp {
         }
         else if (dst.isReg() && src.isImm()) {
             emitRex(buf, w, digitId, dst.reg);
-            buf.emit8(dst.size == 1 ? 0x80 : 0x81);
+            if (opMR == 0x89) buf.emit8(dst.size == 1 ? 0xC6 : 0xC7);
+            else buf.emit8(dst.size == 1 ? 0x80 : 0x81);
+
             buf.emit8(0xC0 | (digitId << 3) | (dst.reg & 7));
             if (dst.size == 1) buf.emit8(src.imm);
             else buf.emit32(src.imm);
         }
         else if (dst.isMem() && src.isImm()) {
             emitRex(buf, w, digitId, dst.mem.baseReg);
-            buf.emit8(dst.size == 1 ? 0x80 : 0x81);
+            if (opMR == 0x89) buf.emit8(dst.size == 1 ? 0xC6 : 0xC7);
+            else buf.emit8(dst.size == 1 ? 0x80 : 0x81);
+
             emitModRM(buf, digitId, dst);
             if (dst.size == 1) buf.emit8(src.imm);
             else buf.emit32(src.imm);
