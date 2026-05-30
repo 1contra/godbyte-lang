@@ -270,7 +270,7 @@ void cmdBuild(int argc, char* argv[]) {
 
     divo::Logger::instance().init(logsDir + "/build.log");
 
-    divo::print_header("Building " + config.projectName + " (Target: " + targetName + " [" + target.type + "])");
+    divo::print_header("Building " + config.projectName + " (Unity Build Target: " + targetName + ")");
     divo::Timer totalTime;
     SourceStats stats;
 
@@ -281,35 +281,47 @@ void cmdBuild(int argc, char* argv[]) {
         double ms = std::chrono::duration<double, std::milli>(end_time - start_time).count();
         timingsArray.push_back({ {"phase", phase}, {"duration_ms", ms} });
         return end_time;
-    };
+        };
 
-    divo::print_group("Frontend Pipeline");
+    divo::print_group("Frontend Pipeline (File Aggregation)");
 
     std::vector<ModuleDef> modules;
     std::set<std::string> visited;
 
     loadImportsRecursively(config.entry, modules, visited, false);
 
-    for (const auto& mod : modules) {
-        stats.functions += (int)mod.ast->functions.size();
-    }
+    std::string cacheState = "ARGS:" + customLinkArgs + "|PROFILE:" + profile;
+    size_t projectHash = std::hash<std::string>{}(cacheState);
 
-    divo::print_item("Resolved " + std::to_string(modules.size()) + " compilation modules.");
-    auto t_frontend = recordTiming("Frontend Lex/Parse/Imports", t_start);
+    // Merge ASTs into a single Whole-Program AST
+    gbpp::Program mergedProgram;
 
-    divo::print_group("Backend Pipeline");
-
-    std::vector<gbpp::Program*> progPtrs;
     for (auto& mod : modules) {
-        progPtrs.push_back(mod.ast.get());
+        projectHash ^= divo::hashFile(mod.sourceFile);
+        stats.functions += (int)mod.ast->functions.size();
+
+        // Standard library / Module merge logic
+        for (auto& i : mod.ast->imports) mergedProgram.imports.push_back(std::move(i));
+        for (auto& a : mod.ast->aliases) mergedProgram.aliases.push_back(std::move(a));
+        for (auto& e : mod.ast->enums) mergedProgram.enums.push_back(std::move(e));
+        for (auto& s : mod.ast->structs) mergedProgram.structs.push_back(std::move(s));
+        for (auto& f : mod.ast->functions) mergedProgram.functions.push_back(std::move(f));
+        for (auto& c : mod.ast->constants) mergedProgram.constants.push_back(std::move(c));
     }
+
+    divo::print_item("Resolved and merged " + std::to_string(modules.size()) + " files into Unity AST.");
+    auto t_frontend = recordTiming("Frontend Lex/Parse/Merge", t_start);
+
+    divo::print_group("Middle-end Pipeline (Sema & IRGen)");
+
+    std::vector<gbpp::Program*> progPtrs = { &mergedProgram };
 
     gbpp::Sema analyzer;
     if (!analyzer.analyzeModules(progPtrs)) {
         divo::print_item_err("Semantic Analysis Failed");
         return;
     }
-    divo::print_item("Semantic analysis passed across all modules.");
+    divo::print_item("Semantic analysis passed across unified program.");
     auto t_sema = recordTiming("Semantic Analysis", t_frontend);
 
     gbpp::Target backendTarget = gbpp::Target::Win64;
@@ -317,71 +329,58 @@ void cmdBuild(int argc, char* argv[]) {
     else if (target.os == "linux" || target.os == "macos") backendTarget = gbpp::Target::SystemV;
 
     std::string objExt = (target.os == "linux") ? ".o" : ".obj";
-    std::string allObjs = "";
-    bool needsLink = false;
+    std::string projectObjPath = objDir + "/" + config.projectName + objExt;
+    std::string hashPath = cacheDir + "/project.hash";
     std::string targetExe = targetBase + "/" + fs::path(target.out).filename().string();
-    std::string cacheState = "ARGS:" + customLinkArgs + "|PROFILE:" + profile;
 
-    for (auto& mod : modules) {
-        fs::path srcP(mod.sourceFile);
-        std::string baseName = srcP.stem().string();
-        std::string prefix = mod.isLib ? "lib_" : "";
-        std::string hashSuffix = std::to_string(std::hash<std::string>{}(mod.sourceFile));
-        mod.objPath = objDir + "/" + prefix + baseName + "_" + hashSuffix + objExt;
+    bool needsLink = false;
+    bool rebuild = true;
 
-        allObjs += "\"" + mod.objPath + "\" ";
+    if (fs::exists(hashPath) && fs::exists(projectObjPath)) {
+        std::ifstream hf(hashPath);
+        size_t oldHash = 0;
+        if (hf >> oldHash && oldHash == projectHash) rebuild = false;
+    }
 
-        std::string hashPath = cacheDir + "/" + prefix + baseName + "_" + hashSuffix + ".hash";
+    if (dumpIr && !fs::exists(targetBase + "/ir/" + config.projectName + ".ir")) rebuild = true;
+    if (dumpAsm && !fs::exists(targetBase + "/asm/" + config.projectName + ".asm")) rebuild = true;
 
-        size_t newHash = computeSmartHash(mod, cacheState, modules);
+    if (rebuild) {
+        needsLink = true;
+        gbpp::IRGenerator irGen;
+        auto irModule = irGen.generate(mergedProgram);
+        irGen.optimize(irModule, enableOpt);
 
-        bool rebuild = true;
-        if (fs::exists(hashPath) && fs::exists(mod.objPath)) {
-            std::ifstream hf(hashPath);
-            size_t oldHash = 0;
-            if (hf >> oldHash && oldHash == newHash) rebuild = false;
+        if (dumpIr) {
+            std::string irDir = targetBase + "/ir";
+            fs::create_directories(irDir);
+            std::string irPath = irDir + "/" + config.projectName + ".ir";
+            std::ofstream irFile(irPath);
+            irModule.print(irFile);
         }
 
-        if (dumpIr && !fs::exists(targetBase + "/ir/" + prefix + baseName + ".ir")) rebuild = true;
-        if (dumpAsm && !fs::exists(targetBase + "/asm/" + prefix + baseName + ".asm")) rebuild = true;
+        auto codegen = gbpp::CodeGen::create(backendTarget);
 
-        if (rebuild) {
-            needsLink = true;
-            gbpp::IRGenerator irGen;
-            auto irModule = irGen.generate(*mod.ast);
-            irGen.optimize(irModule, enableOpt);
-
-            if (dumpIr) {
-                std::string irDir = targetBase + "/ir";
-                fs::create_directories(irDir);
-                std::string irPath = irDir + "/" + prefix + baseName + ".ir";
-                std::ofstream irFile(irPath);
-                irModule.print(irFile);
-            }
-
-            auto codegen = gbpp::CodeGen::create(backendTarget);
-
-            if (dumpAsm) {
-                std::string asmDir = targetBase + "/asm";
-                fs::create_directories(asmDir);
-                std::string asmPath = asmDir + "/" + prefix + baseName + ".asm";
-                std::ofstream asmFile(asmPath);
-                auto asmEmitter = gbpp::Emitter::createAsm();
-                codegen->generate(irModule, *asmEmitter);
-                asmEmitter->finalize(asmFile);
-            }
-
-            std::ofstream objFile(mod.objPath, std::ios::binary);
-            std::unique_ptr<gbpp::Emitter> binEmitter = (backendTarget == gbpp::Target::Win64) ?
-                gbpp::Emitter::createCoffWin64() : gbpp::Emitter::createElfSysV();
-
-            codegen->generate(irModule, *binEmitter);
-            binEmitter->finalize(objFile);
-            objFile.close();
-
-            std::ofstream hf(hashPath); hf << newHash;
-            divo::print_item("Compiled -> " + srcP.filename().string());
+        if (dumpAsm) {
+            std::string asmDir = targetBase + "/asm";
+            fs::create_directories(asmDir);
+            std::string asmPath = asmDir + "/" + config.projectName + ".asm";
+            std::ofstream asmFile(asmPath);
+            auto asmEmitter = gbpp::Emitter::createAsm();
+            codegen->generate(irModule, *asmEmitter);
+            asmEmitter->finalize(asmFile);
         }
+
+        std::ofstream objFile(projectObjPath, std::ios::binary);
+        std::unique_ptr<gbpp::Emitter> binEmitter = (backendTarget == gbpp::Target::Win64) ?
+            gbpp::Emitter::createCoffWin64() : gbpp::Emitter::createElfSysV();
+
+        codegen->generate(irModule, *binEmitter);
+        binEmitter->finalize(objFile);
+        objFile.close();
+
+        std::ofstream hf(hashPath); hf << projectHash;
+        divo::print_item("Compiled -> " + config.projectName + ".obj (Unity Build Optimized)");
     }
 
     if (!fs::exists(targetExe)) needsLink = true;
@@ -411,7 +410,7 @@ void cmdBuild(int argc, char* argv[]) {
 
             std::string linkCmd;
             if (target.os == "linux") {
-                linkCmd = "gcc " + allObjs + dynamicLinkFlags + " " + customLinkArgs + " -g -Wl,-Map=" + mapFile + " -no-pie -o " + targetExe;
+                linkCmd = "gcc \"" + projectObjPath + "\" " + dynamicLinkFlags + " " + customLinkArgs + " -g -Wl,-Map=" + mapFile + " -no-pie -o " + targetExe;
             }
             else {
                 if (!divo::setupMsvcEnvironment()) {
@@ -422,10 +421,10 @@ void cmdBuild(int argc, char* argv[]) {
                 std::string mapFlags = " /MAP:" + mapFile;
 
                 if (tinyBuild) {
-                    linkCmd = "link " + allObjs + dynamicLinkFlags + " " + customLinkArgs + mapFlags + " /nologo /out:" + targetExe;
+                    linkCmd = "link \"" + projectObjPath + "\" " + dynamicLinkFlags + " " + customLinkArgs + mapFlags + " /nologo /out:" + targetExe;
                 }
                 else {
-                    linkCmd = "link " + allObjs + dynamicLinkFlags + " " + customLinkArgs + mapFlags + debugFlags + " /subsystem:console /defaultlib:vcruntime /nologo /out:" + targetExe;
+                    linkCmd = "link \"" + projectObjPath + "\" " + dynamicLinkFlags + " " + customLinkArgs + mapFlags + debugFlags + " /subsystem:console /defaultlib:vcruntime /nologo /out:" + targetExe;
                 }
             }
 
@@ -441,7 +440,7 @@ void cmdBuild(int argc, char* argv[]) {
     std::ofstream timingsFile(logsDir + "/timings.json");
     timingsFile << timingsArray.dump(4);
 
-    divo::print_footer("Build finished in " + std::to_string(totalTime.elapsed()) + "ms", true);
+    divo::print_footer("Unity Build finished in " + std::to_string(totalTime.elapsed()) + "ms", true);
     divo::print_footer_sub("Output:  " + targetExe);
 }
 
