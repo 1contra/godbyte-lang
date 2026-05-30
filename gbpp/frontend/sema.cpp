@@ -945,6 +945,13 @@ namespace gbpp {
                     for (auto& arg : call->args) checkExpr(*arg);
                     call->type = targetFn->returnTypeResolved;
                     isFunctionCall = true;
+                    if (targetFn->attributes.count("extern")) {
+                        size_t p = targetFn->name.rfind("::");
+                        var->name = (p != std::string::npos) ? targetFn->name.substr(p + 2) : targetFn->name;
+                    }
+                    else {
+                        var->name = targetFn->name;
+                    }
                 }
                 else if (!lookupVariable(var->name)) {
                     error(call->loc, "Undeclared function: " + var->name);

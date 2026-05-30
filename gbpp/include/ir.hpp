@@ -183,6 +183,7 @@ namespace gbpp {
         int localCount = 0;
         int argCount = 0;
         bool isInline = false;
+        bool isExported = false;
 
         IRFunction() = default;
         IRFunction(const IRFunction&) = delete;

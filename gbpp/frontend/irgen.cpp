@@ -50,6 +50,7 @@ namespace gbpp {
 
         for (const auto& attr : fn.attributes) {
             if (attr == "inline") irFn.isInline = true;
+            if (attr == "export") irFn.isExported = true;
         }
 
         m_module.functions.push_back(std::move(irFn));
@@ -931,6 +932,15 @@ namespace gbpp {
             reachable.insert("_start");
             worklist.push_back("main");
             worklist.push_back("_start");
+
+            // protect fn's with @export
+            for (const auto& fn : mod.functions) {
+                if (fn.isExported) {
+                    if (reachable.insert(fn.name).second) {
+                        worklist.push_back(fn.name);
+                    }
+                }
+            }
 
             while (!worklist.empty()) {
                 std::string current = worklist.back();
