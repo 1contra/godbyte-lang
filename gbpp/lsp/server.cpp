@@ -1830,8 +1830,39 @@ namespace gbpp::lsp {
         std::string activeStructForSemantics = "";
         int structBraceDepthForSemantics = -1;
 
+        std::set<std::string> knownConstants;
+        for (size_t i = 0; i < tokens.size(); ++i) {
+            if (tokens[i].type == TokenType::Const &&
+                i + 2 < tokens.size() &&
+                tokens[i + 1].type == TokenType::Identifier &&
+                tokens[i + 2].type == TokenType::Colon) {
+                knownConstants.insert(tokens[i + 1].text);
+            }
+            else if (tokens[i].type == TokenType::Identifier &&
+                i + 1 < tokens.size() &&
+                tokens[i + 1].type == TokenType::Colon) {
+
+                for (size_t j = i + 2; j < tokens.size(); ++j) {
+                    if (tokens[j].type == TokenType::Const) {
+                        knownConstants.insert(tokens[i].text);
+                        break;
+                    }
+                    if (tokens[j].type == TokenType::Equal ||
+                        tokens[j].type == TokenType::Semicolon ||
+                        tokens[j].type == TokenType::Comma ||
+                        tokens[j].type == TokenType::LBrace ||
+                        tokens[j].type == TokenType::RBrace ||
+                        tokens[j].type == TokenType::RParen) {
+                        break;
+                    }
+                }
+            }
+        }
+
         for (size_t i = 0; i < tokens.size(); ++i) {
             const auto& token = tokens[i];
+
+            int tokenModifier = 0;
 
             if (token.type == TokenType::Struct && i + 1 < tokens.size() && tokens[i + 1].type == TokenType::Identifier) {
                 activeStructForSemantics = tokens[i + 1].text;
@@ -1865,7 +1896,14 @@ namespace gbpp::lsp {
             int tokenTypeIdx = getSemanticTokenType(token.type, token.text, currentSema);
 
             if (!inMacro && token.type == TokenType::Identifier && token.text != "else") {
-                if (knownGenericParams.count(token.text)) {
+                if (token.text == "this" || token.text == "self") {
+                    tokenTypeIdx = 0;
+                }
+                else if (knownConstants.count(token.text)) {
+                    tokenTypeIdx = 4;
+                    tokenModifier = 4;
+                }
+                else if (knownGenericParams.count(token.text)) {
                     tokenTypeIdx = 1;
                 }
                 else {
@@ -2006,7 +2044,7 @@ namespace gbpp::lsp {
             data.push_back(deltaChar);
             data.push_back(length);
             data.push_back(tokenTypeIdx);
-            data.push_back(0);
+            data.push_back(tokenModifier);
 
             prevLine = line;
             prevChar = character;
@@ -2058,7 +2096,7 @@ namespace gbpp::lsp {
         case TokenType::LBracket: case TokenType::RBracket:
         case TokenType::LParen: case TokenType::RParen:
             return 6;
-        case TokenType::At:
+        case TokenType::At: case TokenType::Const:
         case TokenType::Cast: case TokenType::CastBits:
         case TokenType::Null: case TokenType::Lib:
         case TokenType::Struct: case TokenType::True:
