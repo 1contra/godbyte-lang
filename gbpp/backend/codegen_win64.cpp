@@ -490,7 +490,7 @@ namespace gbpp {
             tri.argRegs = argRegs;
             tri.returnReg = REG_RAX;
             tri.callerSaved = { REG_RAX, REG_RCX, REG_RDX, REG_R8, REG_R9 };
-            tri.calleeSaved = { REG_RBX, REG_RSI, REG_RDI, REG_R12, REG_R13, REG_R14, REG_R15 };
+            tri.calleeSaved = { REG_RBX, REG_RSI, REG_RDI, REG_R12, REG_R13, REG_R14, REG_R15, REG_RBP };
 
             RegAlloc allocator;
             AllocResult alloc = allocator.allocate(fn, tri);
@@ -594,7 +594,9 @@ namespace gbpp {
                 }
             }
 
-            bool needsRBP = (alloc.spillSize > 0) || (localSlotsUsed > 0) || (fn.localCount > 0) || hasAlloc || hasStackArgs;
+            bool omitFramePointer = true;
+            bool needsRBP = !omitFramePointer;
+
             int calleeSavedSpace = mirFn.usedCalleeSaved.size() * 8;
             int maxLocals = std::max(localSlotsUsed, fn.localCount);
             int totalLocalsAndSpills = (maxLocals * 8) + alloc.spillSize;
@@ -631,6 +633,15 @@ namespace gbpp {
                 finalStack += padding;
             }
             mirFn.frameSize = finalStack;
+            int rbpToRspOffset = calleeSavedSpace + finalStack;
+            auto createFrameMem = [&](int offset, int size) -> MachineOperand {
+                if (omitFramePointer) {
+                    return MachineOperand::createMem(REG_RSP, offset + rbpToRspOffset, size);
+                }
+                else {
+                    return MachineOperand::createMem(REG_RBP, offset, size);
+                }
+            };
 
             auto resolveOp = [&](int vOp, int size) -> MachineOperand {
                 if (vOp == -1) return MachineOperand::createImm(0, size);
@@ -642,7 +653,7 @@ namespace gbpp {
                 if (alloc.registers.count(vOp)) return MachineOperand::createReg(alloc.registers[vOp], size);
                 if (alloc.spills.count(vOp)) {
                     int offset = -(calleeSavedSpace + (maxLocals * 8) + alloc.spills[vOp]);
-                    return MachineOperand::createMem(REG_RBP, offset, size);
+                    return createFrameMem(offset, size);
                 }
                 return MachineOperand::createImm(0, size);
             };
@@ -679,7 +690,7 @@ namespace gbpp {
                         }
                         else {
                             int stackOffset = 16 + (argIdx * 8);
-                            MachineOperand mem = MachineOperand::createMem(REG_RBP, stackOffset, inst.bytes);
+                            MachineOperand mem = createFrameMem(stackOffset, inst.bytes);
                             emitLirMov(mb.insts, dst, mem);
                         }
                         break;
@@ -699,17 +710,17 @@ namespace gbpp {
                         break;
                     }
                     case OpCode::LOAD_LOCAL: {
-                        MachineOperand mem = MachineOperand::createMem(REG_RBP, getLocalOffset(inst.imm), inst.bytes);
+                        MachineOperand mem = createFrameMem(getLocalOffset(inst.imm), inst.bytes);
                         emitLirMov(mb.insts, resolveOp(inst.dest, inst.bytes), mem);
                         break;
                     }
                     case OpCode::STORE_LOCAL: {
-                        MachineOperand mem = MachineOperand::createMem(REG_RBP, getLocalOffset(inst.imm), inst.bytes);
+                        MachineOperand mem = createFrameMem(getLocalOffset(inst.imm), inst.bytes);
                         emitLirMov(mb.insts, mem, resolveOp(inst.src1, inst.bytes));
                         break;
                     }
                     case OpCode::LEA_LOCAL: {
-                        MachineOperand mem = MachineOperand::createMem(REG_RBP, getLocalOffset(inst.imm), 8);
+                        MachineOperand mem = createFrameMem(getLocalOffset(inst.imm), 8);
                         MachineOperand dst = resolveOp(inst.dest, 8);
                         if (dst.isMem()) {
                             auto r11 = MachineOperand::createReg(REG_R11, 8);
@@ -854,7 +865,7 @@ namespace gbpp {
                     }
                     case OpCode::ALLOC: {
                         int offset = allocOffsets[inst.dest];
-                        MachineOperand mem = MachineOperand::createMem(REG_RBP, -offset, 8);
+                        MachineOperand mem = createFrameMem(-offset, 8);
                         MachineOperand dst = resolveOp(inst.dest, 8);
                         if (dst.isMem()) {
                             auto r11 = MachineOperand::createReg(REG_R11, 8);
@@ -1088,7 +1099,7 @@ namespace gbpp {
                         if (alloc.callSpills.count(globalIdx)) {
                             for (int vReg : alloc.callSpills[globalIdx]) {
                                 MachineOperand reg = resolveOp(vReg, 8);
-                                MachineOperand mem = MachineOperand::createMem(REG_RBP, -(calleeSavedSpace + (maxLocals * 8) + alloc.spills[vReg]), 8);
+                                MachineOperand mem = createFrameMem(-(calleeSavedSpace + (maxLocals * 8) + alloc.spills[vReg]), 8);
                                 emitLirMov(mb.insts, mem, reg);
                             }
                         }
