@@ -37,15 +37,9 @@ namespace gbpp {
             }
         }
 
-        for (auto& c : prog.constants) {
-            m_constants[c->name] = c.get();
-
-            Type* expectedType = resolveType(c->parsedType);
-            checkExpr(*c->initializer);
-
-            if (expectedType && c->initializer->type && *expectedType != *c->initializer->type) {
-                error(c->loc, "Type mismatch in constant '" + c->name + "'");
-            }
+        for(auto& v : prog.globalVars) {
+            m_globalVars[v->name] = v.get();
+            checkStmt(*v);
         }
 
         for (auto& enm : prog.enums) m_enums[enm->name] = enm.get();
@@ -101,6 +95,9 @@ namespace gbpp {
         enterScope();
 
         for (auto prog : progs) {
+            for (auto& v : prog->globalVars) {
+                m_globalVars[v->name] = v.get();
+            }
             for (auto& st : prog->structs) {
                 if (!st->genericParams.empty()) {
                     m_generic_structs[st->name] = st.get();
@@ -136,6 +133,12 @@ namespace gbpp {
                         runningOffset = std::max(runningOffset, field.offset) + fieldSize;
                     }
                 }
+            }
+        }
+
+        for (auto prog : progs) {
+            for (auto& v : prog->globalVars) {
+                checkStmt(*v);
             }
         }
 
@@ -249,9 +252,11 @@ namespace gbpp {
         }
 
         bool isVolatile = actual.hasModifier(TypeModifier::Volatile);
+        bool isConst = actual.hasModifier(TypeModifier::Const);
 
         baseType = new Type(*baseType);
         baseType->isVolatile = isVolatile;
+        baseType->isConst = isConst;
 
         if (actual.isArray) {
             if (actual.arraySizeExpr.empty()) {
@@ -271,8 +276,14 @@ namespace gbpp {
                     arrSize = std::stoi(actual.arraySizeExpr);
                 }
                 catch (...) {
-                    if (m_constants.count(actual.arraySizeExpr)) {
-
+                    if (m_globalVars.count(actual.arraySizeExpr) && m_globalVars[actual.arraySizeExpr]->initializer) {
+                        if (auto lit = dynamic_cast<IntLiteral*>(m_globalVars[actual.arraySizeExpr]->initializer.get())) {
+                            arrSize = std::stoi(lit->value);
+                        }
+                        else {
+                            errors.push_back("Semantic Error: Array size constant '" + actual.arraySizeExpr + "' must be initialized with an integer literal.");
+                            isDynamic = true;
+                        }
                     }
                     else {
                         errors.push_back("Semantic Error: Invalid array size expression '" + actual.arraySizeExpr + "'. Must be a constant integer.");
@@ -291,7 +302,7 @@ namespace gbpp {
         }
 
         for (auto it = actual.modifiers.rbegin(); it != actual.modifiers.rend(); ++it) {
-            if (*it == TypeModifier::Volatile) continue;
+            if (*it == TypeModifier::Volatile || *it == TypeModifier::Const) continue;
 
             baseType = new Type{
                 ScalarType::Pointer,
@@ -741,16 +752,12 @@ namespace gbpp {
             pt.modifiers.push_back(TypeModifier::Ref);
 
             if (addr->operand->type->isVolatile) pt.modifiers.push_back(TypeModifier::Volatile);
+            if (addr->operand->type->isConst) pt.modifiers.push_back(TypeModifier::Const);
 
             addr->type = resolveType(pt);
         }
         else if (auto var = dynamic_cast<VarExpr*>(&expr)) {
             var->type = lookupVariable(var->name);
-
-            if (!var->type && m_constants.count(var->name)) {
-                var->type = resolveType(m_constants[var->name]->parsedType);
-                return;
-            }
 
             if (!var->type) {
                 std::string mangled = var->name;
@@ -893,6 +900,10 @@ namespace gbpp {
             if (!assign->target->type) assign->target->type = &TypeVoid;
             if (!assign->value->type) assign->value->type = &TypeVoid;
 
+            if (assign->target->type && assign->target->type->isConst) {
+                error(assign->loc, "Cannot assign to a const variable.");
+            }
+
             assign->type = assign->target->type;
 
             if (assign->op != TokenType::Equal && dynamic_cast<IntLiteral*>(assign->value.get())) {
@@ -915,6 +926,7 @@ namespace gbpp {
                         assign->value->type->toString() + " to " + assign->target->type->toString());
                 }
             }
+        }
             else if (auto bin = dynamic_cast<BinaryExpr*>(&expr)) {
                 checkExpr(*bin->left);
                 checkExpr(*bin->right);
@@ -1070,7 +1082,6 @@ namespace gbpp {
                 }
                 expr.type = cast->targetType;
             }
-        }
     }
 
     void Sema::enterScope() {

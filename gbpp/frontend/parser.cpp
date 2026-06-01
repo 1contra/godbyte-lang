@@ -97,6 +97,9 @@ namespace gbpp {
             else if (match(TokenType::Volatile)) {
                 pt.modifiers.push_back(TypeModifier::Volatile);
             }
+            else if (match(TokenType::Const)) {
+                pt.modifiers.push_back(TypeModifier::Const);
+            }
             else {
                 break;
             }
@@ -168,6 +171,7 @@ namespace gbpp {
             if (p.match(TokenType::Owner)) typeName += "owner ";
             else if (p.match(TokenType::Ref)) typeName += "ref ";
             else if (p.match(TokenType::Volatile)) typeName += "volatile ";
+            else if (p.match(TokenType::Const)) typeName += "const ";
             else break;
         }
 
@@ -255,22 +259,23 @@ namespace gbpp {
                     if (!currentNamespace.empty()) en->name = currentNamespace + "::" + en->name;
                     program->enums.push_back(std::move(en));
                 }
-                else if (match(TokenType::Const)) {
-                    auto constDecl = std::make_unique<ConstDecl>();
-                    constDecl->loc = previous().loc;
-                    constDecl->attributes = std::move(pendingAttrs);
+                else if (check(TokenType::Identifier) && peek(1).type == TokenType::Colon) {
+                    auto decl = std::make_unique<VarDecl>();
+                    decl->attributes = std::move(pendingAttrs);
+                    Token nameTok = consume(TokenType::Identifier, "Expect name");
+                    decl->loc = nameTok.loc;
+                    decl->name = nameTok.text;
+                    if (!currentNamespace.empty()) decl->name = currentNamespace + "::" + decl->name;
 
-                    constDecl->name = consume(TokenType::Identifier, "Expect constant name").text;
-                    if (!currentNamespace.empty()) constDecl->name = currentNamespace + "::" + constDecl->name;
+                    consume(TokenType::Colon, "Expect ':'");
+                    decl->parsedType = parseType();
 
-                    consume(TokenType::Colon, "Expect ':' after constant name");
-                    constDecl->parsedType = parseType();
+                    if (match(TokenType::Equal)) {
+                        decl->initializer = parseExpression();
+                    }
 
-                    consume(TokenType::Equal, "Expect '=' after constant type");
-                    constDecl->initializer = parseExpression();
-
-                    consume(TokenType::Semicolon, "Expect ';' after constant declaration");
-                    program->constants.push_back(std::move(constDecl));
+                    consume(TokenType::Semicolon, "Expect ';'");
+                    program->globalVars.push_back(std::move(decl));
                 }
                 else if (match(TokenType::Alias)) {
                     auto aliasDecl = std::make_unique<AliasDecl>();

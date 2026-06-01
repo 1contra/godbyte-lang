@@ -8,7 +8,7 @@
 
 namespace gbpp {
 
-    enum class TypeModifier { None, Owner, Ref, Volatile};
+    enum class TypeModifier { None, Owner, Ref, Volatile, Const };
 
     struct ParsedType {
         std::string baseName;
@@ -46,6 +46,7 @@ namespace gbpp {
                 if (mod == TypeModifier::Owner) res += "owner ";
                 else if (mod == TypeModifier::Ref) res += "ref ";
                 else if (mod == TypeModifier::Volatile) res += "volatile ";
+                else if (mod == TypeModifier::Const) res += "const ";
             }
 
             res += baseName;
@@ -228,14 +229,6 @@ namespace gbpp {
         std::vector<EnumMember> members;
     };
 
-    struct ConstDecl {
-        SourceLoc loc;
-        std::set<std::string> attributes;
-        std::string name;
-        ParsedType parsedType;
-        std::unique_ptr<Expr> initializer;
-    };
-
     struct EnumAccessExpr : Expr {
         std::string enumName;
         std::string memberName;
@@ -260,6 +253,6 @@ namespace gbpp {
         std::vector<std::unique_ptr<EnumDecl>> enums;
         std::vector<std::unique_ptr<StructDecl>> structs;
         std::vector<std::unique_ptr<FunctionDecl>> functions;
-        std::vector<std::unique_ptr<ConstDecl>> constants;
+        std::vector<std::unique_ptr<VarDecl>> globalVars;
     };
 }

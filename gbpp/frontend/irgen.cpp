@@ -22,6 +22,11 @@ namespace gbpp {
         m_module = IRModule();
         m_structMap.clear();
         m_loopExits.clear();
+        m_globals.clear();
+
+        for (const auto& v : prog.globalVars) {
+            m_globals[v->name] = v.get();
+        }
 
         for (const auto& st : prog.structs) {
             if (st->genericParams.empty()) {
@@ -379,6 +384,15 @@ namespace gbpp {
             return vReg;
         }
         else if (auto var = dynamic_cast<const VarExpr*>(&expr)) {
+            if (m_globals.count(var->name)) {
+                const VarDecl* gDecl = m_globals[var->name];
+                if (gDecl->resolvedType && gDecl->resolvedType->isConst && gDecl->initializer) {
+                    if (!dynamic_cast<const StructInitExpr*>(gDecl->initializer.get())) {
+                        return genExpr(*gDecl->initializer);
+                    }
+                }
+            }
+
             int res = m_currentFunc->allocVReg();
             int size = 8;
             if (var->type && !var->type->isArray && var->type->scalar != ScalarType::Struct) {
@@ -507,6 +521,21 @@ namespace gbpp {
         }
         else if (auto mem = dynamic_cast<const MemberExpr*>(&expr)) {
             int base = -1;
+
+            if (auto varObj = dynamic_cast<const VarExpr*>(mem->object.get())) {
+                if (m_globals.count(varObj->name)) {
+                    const VarDecl* gDecl = m_globals[varObj->name];
+                    if (gDecl->resolvedType && gDecl->resolvedType->isConst && gDecl->initializer) {
+                        if (auto sInit = dynamic_cast<const StructInitExpr*>(gDecl->initializer.get())) {
+                            for (const auto& fInit : sInit->fields) {
+                                if (fInit.name == mem->memberName) {
+                                    return genExpr(*fInit.value);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
 
             if (auto deref = dynamic_cast<const DerefExpr*>(mem->object.get())) {
                 base = genExpr(*deref->operand);

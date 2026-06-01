@@ -22,6 +22,7 @@ namespace gbpp {
         std::map<std::string, int> m_locals;
 
         std::unordered_map<std::string, StructDecl*> m_structMap;
+        std::unordered_map<std::string, const VarDecl*> m_globals;
         BasicBlock* m_exitBlock = nullptr;
         BasicBlock* m_currentBlock = nullptr;
         std::vector<BasicBlock*> m_loopExits;

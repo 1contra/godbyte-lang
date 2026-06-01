@@ -23,7 +23,7 @@ namespace gbpp {
         std::unordered_map<std::string, StructDecl*> m_structs;
         std::unordered_map<std::string, FunctionDecl*> m_functions;
         std::unordered_map<std::string, EnumDecl*> m_enums;
-        std::unordered_map<std::string, ConstDecl*> m_constants;
+        std::unordered_map<std::string, VarDecl*> m_globalVars;
         std::map<std::string, ParsedType> m_aliases;
 
         std::vector<std::string> errors;

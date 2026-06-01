@@ -15,6 +15,7 @@ namespace gbpp {
 
         Type* base = nullptr;
         bool isVolatile = false;
+        bool isConst = false;
 
         bool isNull() const { return name == "null"; }
 

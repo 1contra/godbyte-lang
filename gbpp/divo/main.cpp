@@ -293,20 +293,18 @@ void cmdBuild(int argc, char* argv[]) {
     std::string cacheState = "ARGS:" + customLinkArgs + "|PROFILE:" + profile;
     size_t projectHash = std::hash<std::string>{}(cacheState);
 
-    // Merge ASTs into a single Whole-Program AST
     gbpp::Program mergedProgram;
 
     for (auto& mod : modules) {
         projectHash ^= divo::hashFile(mod.sourceFile);
         stats.functions += (int)mod.ast->functions.size();
 
-        // Standard library / Module merge logic
         for (auto& i : mod.ast->imports) mergedProgram.imports.push_back(std::move(i));
         for (auto& a : mod.ast->aliases) mergedProgram.aliases.push_back(std::move(a));
         for (auto& e : mod.ast->enums) mergedProgram.enums.push_back(std::move(e));
         for (auto& s : mod.ast->structs) mergedProgram.structs.push_back(std::move(s));
         for (auto& f : mod.ast->functions) mergedProgram.functions.push_back(std::move(f));
-        for (auto& c : mod.ast->constants) mergedProgram.constants.push_back(std::move(c));
+        for (auto& v : mod.ast->globalVars) mergedProgram.globalVars.push_back(std::move(v));
     }
 
     divo::print_item("Resolved and merged " + std::to_string(modules.size()) + " files into Unity AST.");
