@@ -1100,7 +1100,7 @@ namespace gbpp {
                             for (int vReg : alloc.callSpills[globalIdx]) {
                                 MachineOperand reg = resolveOp(vReg, 8);
                                 MachineOperand mem = createFrameMem(-(calleeSavedSpace + (maxLocals * 8) + alloc.spills[vReg]), 8);
-                                emitLirMov(mb.insts, mem, reg);
+                                emitLirMov(mb.insts, reg, mem);
                             }
                         }
 
