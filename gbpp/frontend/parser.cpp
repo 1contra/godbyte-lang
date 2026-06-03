@@ -354,7 +354,7 @@ namespace gbpp {
                         auto methodDecl = parseFunction();
                         methodDecl->attributes = std::move(pendingAttrs);
                         methodDecl->genericParams = st->genericParams;
-                        methodDecl->name = st->name + "_" + methodDecl->name;
+                        methodDecl->name = st->name + "::" + methodDecl->name;
 
                         st->methods.push_back(std::move(methodDecl));
                     }
@@ -420,7 +420,7 @@ namespace gbpp {
             else {
                 methodTok = consume(TokenType::Identifier, "Expect method name");
             }
-            name += "_" + methodTok.text;
+            name += "::" + methodTok.text;
         }
 
         fn->name = name;
@@ -493,7 +493,7 @@ namespace gbpp {
             throw std::runtime_error("Attributes allowed only on variable declarations.");
         }
 
-        if (match(TokenType::AsmBlock)) {
+        if (match(TokenType::Asm)) {
             auto stmt = std::make_unique<AsmStmt>();
             stmt->loc = previous().loc;
             stmt->assembly = previous().text;
@@ -687,63 +687,14 @@ namespace gbpp {
     }
 
     std::unique_ptr<Expr> Parser::parseFactor() {
-        auto parseUnaryPostfix = [&]() -> std::unique_ptr<Expr> {
-            auto expr = parsePrimary();
-            while (check(TokenType::Dot) || check(TokenType::LBracket) || check(TokenType::LParen) ||
-                check(TokenType::PlusPlus) || check(TokenType::MinusMinus)) {
-
-                if (match(TokenType::PlusPlus) || match(TokenType::MinusMinus)) {
-                    TokenType op = previous().type;
-
-                    auto one = std::make_unique<IntLiteral>();
-                    one->loc = previous().loc;
-                    one->value = "1";
-
-                    auto assign = std::make_unique<AssignmentExpr>();
-                    assign->loc = previous().loc;
-                    assign->target = std::move(expr);
-                    assign->op = (op == TokenType::PlusPlus) ? TokenType::PlusEqual : TokenType::MinusEqual;
-                    assign->value = std::move(one);
-
-                    expr = std::move(assign);
-                    continue;
-                }
-
-                if (match(TokenType::Dot)) {
-                    auto mem = std::make_unique<MemberExpr>();
-                    mem->object = std::move(expr);
-                    mem->memberName = consume(TokenType::Identifier, "Expect member name").text;
-                    expr = std::move(mem);
-                }
-                else if (match(TokenType::LBracket)) {
-                    auto arr = std::make_unique<ArrayAccessExpr>();
-                    arr->array = std::move(expr);
-                    arr->index = parseExpression();
-                    consume(TokenType::RBracket, "Expect ']'");
-                    expr = std::move(arr);
-                }
-                else if (match(TokenType::LParen)) {
-                    auto call = std::make_unique<CallExpr>();
-                    call->loc = previous().loc;
-                    call->callee = std::move(expr);
-                    if (!check(TokenType::RParen)) {
-                        do { call->args.push_back(parseExpression()); } while (match(TokenType::Comma));
-                    }
-                    consume(TokenType::RParen, "Expect ')'");
-                    expr = std::move(call);
-                }
-            }
-            return expr;
-        };
-
-        auto expr = parseUnaryPostfix();
+        auto expr = parsePrimary();
 
         while (match(TokenType::Star) || match(TokenType::Slash) || match(TokenType::Percent)) {
             TokenType op = previous().type;
             auto bin = std::make_unique<BinaryExpr>();
             bin->left = std::move(expr);
             bin->op = op;
-            bin->right = parseUnaryPostfix();
+            bin->right = parsePrimary();
             expr = std::move(bin);
         }
         return expr;
@@ -781,12 +732,14 @@ namespace gbpp {
     }
 
     std::unique_ptr<Expr> Parser::parsePrimary() {
+        std::unique_ptr<Expr> expr = nullptr;
+
         if (match(TokenType::StringLiteral)) {
             auto lit = std::make_unique<StringLiteral>();
             lit->value = previous().text;
-            return lit;
+            expr = std::move(lit);
         }
-        if (match(TokenType::CharLiteral)) {
+        else if (match(TokenType::CharLiteral)) {
             auto lit = std::make_unique<IntLiteral>();
             std::string text = previous().text;
             char c = 0;
@@ -805,54 +758,50 @@ namespace gbpp {
             }
 
             lit->value = std::to_string((int)c) + "u8";
-            return lit;
+            expr = std::move(lit);
         }
-        if (match(TokenType::Minus) || match(TokenType::Bang) || match(TokenType::Tilde)) {
+        else if (match(TokenType::Minus) || match(TokenType::Bang) || match(TokenType::Tilde)) {
             auto un = std::make_unique<UnaryExpr>();
             un->loc = previous().loc;
             un->op = previous().type;
             un->operand = parsePrimary();
-            return un;
+            expr = std::move(un);
         }
-
-        if (match(TokenType::Star)) {
+        else if (match(TokenType::Star)) {
             auto deref = std::make_unique<DerefExpr>();
             deref->operand = parsePrimary();
-            return deref;
+            expr = std::move(deref);
         }
-
-        if (match(TokenType::Null)) {
-            return std::make_unique<NullLiteral>();
+        else if (match(TokenType::Null)) {
+            expr = std::make_unique<NullLiteral>();
         }
-        if(match(TokenType::True)) {
+        else if (match(TokenType::True)) {
             auto lit = std::make_unique<IntLiteral>();
             lit->loc = previous().loc;
             lit->value = "1u8";
-            return lit;
+            expr = std::move(lit);
         }
-        if (match(TokenType::False)) {
+        else if (match(TokenType::False)) {
             auto lit = std::make_unique<IntLiteral>();
             lit->loc = previous().loc;
             lit->value = "0u8";
-            return lit;
+            expr = std::move(lit);
         }
-        if (match(TokenType::FloatLiteral)) {
+        else if (match(TokenType::FloatLiteral)) {
             auto lit = std::make_unique<FloatLiteral>();
             lit->value = previous().text;
-            return lit;
+            expr = std::move(lit);
         }
-
-        if (match(TokenType::Sizeof)) {
+        else if (match(TokenType::Sizeof)) {
             consume(TokenType::LT, "Expect '<' after sizeof");
             ParsedType pt = parseType();
             consumeGT("Expect '>' after type in sizeof");
 
-            auto expr = std::make_unique<SizeofExpr>();
-            expr->parsedTargetType = pt;
-            return expr;
+            auto sz = std::make_unique<SizeofExpr>();
+            sz->parsedTargetType = pt;
+            expr = std::move(sz);
         }
-
-        if (match(TokenType::Alloc)) {
+        else if (match(TokenType::Alloc)) {
             consume(TokenType::LT, "Expect '<' after alloc");
             ParsedType pt = parseType();
             consumeGT("Expect '>' after type in alloc");
@@ -867,19 +816,19 @@ namespace gbpp {
             }
             consume(TokenType::RParen, "Expect ')' after alloc args");
 
-            return alloc;
+            expr = std::move(alloc);
         }
-        if (match(TokenType::IntLiteral)) {
+        else if (match(TokenType::IntLiteral)) {
             auto lit = std::make_unique<IntLiteral>();
             lit->value = previous().text;
-            return lit;
+            expr = std::move(lit);
         }
-        if (match(TokenType::Ampersand)) {
+        else if (match(TokenType::Ampersand)) {
             auto addr = std::make_unique<AddrOfExpr>();
             addr->operand = parsePrimary();
-            return addr;
+            expr = std::move(addr);
         }
-        if (match(TokenType::Cast) || match(TokenType::CastBits)) {
+        else if (match(TokenType::Cast) || match(TokenType::CastBits)) {
             auto kind = (previous().type == TokenType::Cast) ? CastKind::Value : CastKind::Bits;
             consume(TokenType::LT, "Expect '<' after cast");
             ParsedType pt = parseType();
@@ -892,9 +841,9 @@ namespace gbpp {
             cast->castKind = kind;
             cast->parsedTargetType = pt;
             cast->operand = std::move(operand);
-            return cast;
+            expr = std::move(cast);
         }
-        if (match(TokenType::Identifier)) {
+        else if (match(TokenType::Identifier)) {
             Token identTok = previous();
             std::string name = identTok.text;
 
@@ -913,38 +862,85 @@ namespace gbpp {
                     std::string fieldName = consume(TokenType::Identifier, "Expect field name").text;
                     consume(TokenType::Colon, "Expect ':' after field name");
 
-                    auto expr = parseExpression();
-                    structInit->fields.push_back({ fieldName, std::move(expr) });
+                    auto initExpr = parseExpression();
+                    structInit->fields.push_back({ fieldName, std::move(initExpr) });
 
                     if (match(TokenType::Comma)) continue;
                     break;
                 }
                 consume(TokenType::RBrace, "Expect '}' after struct initialization");
-                return structInit;
+                expr = std::move(structInit);
             }
-
-            if (isPath && !check(TokenType::LParen)) {
+            else if (isPath && !check(TokenType::LParen)) {
                 size_t pos = name.rfind("::");
                 auto enumAcc = std::make_unique<EnumAccessExpr>();
                 enumAcc->loc = identTok.loc;
                 enumAcc->enumName = name.substr(0, pos);
                 enumAcc->memberName = name.substr(pos + 2);
-                return enumAcc;
+                expr = std::move(enumAcc);
+            }
+            else {
+                auto var = std::make_unique<VarExpr>();
+                var->loc = identTok.loc;
+                var->name = name;
+                expr = std::move(var);
+            }
+        }
+        else if (match(TokenType::LParen)) {
+            expr = parseExpression();
+            consume(TokenType::RParen, "Expect ')'");
+        }
+        else {
+            throw std::runtime_error("Line " + std::to_string(peek().loc.line) + ":" +
+                std::to_string(peek().loc.col) + " - Unexpected token: '" + peek().text + "'");
+        }
+
+        while (check(TokenType::Dot) || check(TokenType::LBracket) || check(TokenType::LParen) ||
+            check(TokenType::PlusPlus) || check(TokenType::MinusMinus)) {
+
+            if (match(TokenType::PlusPlus) || match(TokenType::MinusMinus)) {
+                TokenType op = previous().type;
+
+                auto one = std::make_unique<IntLiteral>();
+                one->loc = previous().loc;
+                one->value = "1";
+
+                auto assign = std::make_unique<AssignmentExpr>();
+                assign->loc = previous().loc;
+                assign->target = std::move(expr);
+                assign->op = (op == TokenType::PlusPlus) ? TokenType::PlusEqual : TokenType::MinusEqual;
+                assign->value = std::move(one);
+
+                expr = std::move(assign);
+                continue;
             }
 
-            auto var = std::make_unique<VarExpr>();
-            var->loc = identTok.loc;
-            var->name = name;
-            return var;
-        }
-        if (match(TokenType::LParen)) {
-            auto expr = parseExpression();
-            consume(TokenType::RParen, "Expect ')'");
-            return expr;
+            if (match(TokenType::Dot)) {
+                auto mem = std::make_unique<MemberExpr>();
+                mem->object = std::move(expr);
+                mem->memberName = consume(TokenType::Identifier, "Expect member name").text;
+                expr = std::move(mem);
+            }
+            else if (match(TokenType::LBracket)) {
+                auto arr = std::make_unique<ArrayAccessExpr>();
+                arr->array = std::move(expr);
+                arr->index = parseExpression();
+                consume(TokenType::RBracket, "Expect ']'");
+                expr = std::move(arr);
+            }
+            else if (match(TokenType::LParen)) {
+                auto call = std::make_unique<CallExpr>();
+                call->loc = previous().loc;
+                call->callee = std::move(expr);
+                if (!check(TokenType::RParen)) {
+                    do { call->args.push_back(parseExpression()); } while (match(TokenType::Comma));
+                }
+                consume(TokenType::RParen, "Expect ')'");
+                expr = std::move(call);
+            }
         }
 
-        throw std::runtime_error("Line " + std::to_string(peek().loc.line) + ":" +
-            std::to_string(peek().loc.col) + " - Unexpected token: '" + peek().text + "'");
+        return expr;
     }
 
     std::unique_ptr<EnumDecl> Parser::parseEnum() {
