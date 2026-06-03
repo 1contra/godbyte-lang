@@ -2064,8 +2064,6 @@ namespace gbpp::lsp {
         case TokenType::If: case TokenType::Else: case TokenType::While: case TokenType::Owner: case TokenType::For:
         case TokenType::Ref:
             return 0;
-        case TokenType::Alloc: case TokenType::Sizeof:
-            return 10;
         case TokenType::U8: case TokenType::U16: case TokenType::U32: case TokenType::U64:
         case TokenType::I8: case TokenType::I16: case TokenType::I32: case TokenType::I64:
         case TokenType::F32: case TokenType::F64: case TokenType::Void:
@@ -2101,6 +2099,7 @@ namespace gbpp::lsp {
         case TokenType::Null: case TokenType::Lib:
         case TokenType::Struct: case TokenType::True:
         case TokenType::False: case TokenType::Volatile:
+        case TokenType::Alloc: case TokenType::Sizeof:
             return 8;
         case TokenType::HashImport:
             return 8;
