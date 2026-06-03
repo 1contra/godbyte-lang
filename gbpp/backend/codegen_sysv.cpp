@@ -349,6 +349,15 @@ namespace gbpp {
                 case MInstOpcode::X86_POPr: return "pop";
                 case MInstOpcode::X86_LEAVE: return "leave";
                 case MInstOpcode::X86_RET: return "ret";
+                case MInstOpcode::X86_MOVAPS: return "movaps";
+                case MInstOpcode::X86_MOVUPS: return "movups";
+                case MInstOpcode::X86_MOVDQA: return "movdqa";
+                case MInstOpcode::X86_MOVDQU: return "movdqu";
+                case MInstOpcode::X86_PADDD: return "paddd";
+                case MInstOpcode::X86_PSUBD: return "psubd";
+                case MInstOpcode::X86_XORPS: return "xorps";
+                case MInstOpcode::X86_ADDSS: return "addss";
+                case MInstOpcode::X86_ADDSD: return "addsd";
                 default: return "";
             }
         }
@@ -421,8 +430,55 @@ namespace gbpp {
                             continue;
                         }
 
+                        if (inst.opcode == MInstOpcode::X86_LEAr && i + 1 < block.insts.size()) {
+                            auto& next = block.insts[i + 1];
+                            if (next.opcode == MInstOpcode::X86_MOVrr &&
+                                inst.operands[1].isMem() &&
+                                next.operands[0].reg == inst.operands[1].mem.baseReg &&
+                                next.operands[1].reg == inst.operands[0].reg) {
+
+                                MachineInstr addInst;
+                                addInst.opcode = MInstOpcode::X86_ADDri;
+                                addInst.operands.push_back(next.operands[0]);
+                                addInst.operands.push_back(MachineOperand::createImm(inst.operands[1].mem.offset, next.operands[0].size));
+
+                                newInsts.push_back(addInst);
+                                i++; changed = true; continue;
+                            }
+                        }
+
+                        if (inst.opcode == MInstOpcode::X86_MOVrr && i + 2 < block.insts.size()) {
+                            auto& math = block.insts[i + 1];
+                            auto& movBack = block.insts[i + 2];
+
+                            bool isMath = (math.opcode == MInstOpcode::X86_ADDri || math.opcode == MInstOpcode::X86_SUBri);
+                            if (isMath && movBack.opcode == MInstOpcode::X86_MOVrr) {
+                                if (math.operands[0].reg == inst.operands[0].reg &&
+                                    movBack.operands[1].reg == inst.operands[0].reg &&
+                                    movBack.operands[0].reg == inst.operands[1].reg) {
+
+                                    MachineInstr directMath;
+                                    directMath.opcode = math.opcode;
+                                    directMath.operands.push_back(movBack.operands[0]);
+                                    directMath.operands.push_back(math.operands[1]);
+
+                                    newInsts.push_back(directMath);
+                                    i += 2; changed = true; continue;
+                                }
+                            }
+                        }
+
                         if (i + 1 < block.insts.size()) {
                             auto& next = block.insts[i + 1];
+
+                            if (inst.opcode == MInstOpcode::X86_MOVrr && next.opcode == MInstOpcode::X86_MOVrr) {
+                                if (inst.operands[0].reg == next.operands[1].reg && inst.operands[1].reg == next.operands[0].reg) {
+                                    if (inst.operands[0].size == next.operands[0].size) {
+                                        newInsts.push_back(inst);
+                                        i++; changed = true; continue;
+                                    }
+                                }
+                            }
 
                             if (inst.opcode == MInstOpcode::X86_MOVrr && next.opcode == MInstOpcode::X86_MOVrr) {
                                 if (inst.operands[0].reg == next.operands[1].reg) {
@@ -497,15 +553,6 @@ namespace gbpp {
             MIRFunction mirFn;
             mirFn.name = fn.name;
 
-            for (int reg : tri.calleeSaved) {
-                for (auto const& [v, p] : alloc.registers) {
-                    if (p == reg) {
-                        mirFn.usedCalleeSaved.push_back(reg);
-                        break;
-                    }
-                }
-            }
-
             bool hasCall = false;
             bool hasAlloc = false;
             bool hasStackArgs = false;
@@ -552,6 +599,17 @@ namespace gbpp {
                     else {
                         if (inst.src1 != -1) usedAsReg.insert(inst.src1);
                         if (inst.src2 != -1) usedAsReg.insert(inst.src2);
+                    }
+                }
+            }
+
+            for (int reg : tri.calleeSaved) {
+                for (auto const& [v, p] : alloc.registers) {
+                    if (p == reg) {
+                        if (constVals.count(v)) continue;
+                        if (useCounts[v] == 0 && defCounts[v] == 0) continue;
+                        mirFn.usedCalleeSaved.push_back(reg);
+                        break;
                     }
                 }
             }
