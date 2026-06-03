@@ -27,16 +27,30 @@ else()
     target_compile_options(gbpp_lib PRIVATE -Wall -Wextra)
 endif()
 
+add_custom_target(UpdateVersion ALL
+    COMMAND ${CMAKE_COMMAND} 
+        -D CMAKE_CURRENT_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR} 
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/increment_version.cmake
+    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+    COMMENT "Incrementing GodByte++ build version..."
+)
+
+include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
+
 add_executable(divo
     divo/main.cpp
 )
 target_link_libraries(divo PRIVATE gbpp_lib)
+
+add_dependencies(divo UpdateVersion)
 
 add_executable(gbpp-lsp
     lsp/main.cpp
     lsp/server.cpp
 )
 target_link_libraries(gbpp-lsp PRIVATE gbpp_lib)
+
+add_dependencies(gbpp-lsp UpdateVersion)
 
 if(MSVC)
     target_compile_options(divo PRIVATE /W4)

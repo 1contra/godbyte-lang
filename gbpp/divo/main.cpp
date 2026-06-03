@@ -13,6 +13,7 @@
 #include "../include/sema.hpp"
 #include "../include/irgen.hpp"
 #include "../include/codegen.hpp"
+#include "../include/version.hpp"
 #include "../utils/json.hpp"
 #include "utils.hpp"
 #include "config.hpp"
@@ -72,27 +73,48 @@ void loadImportsRecursively(const std::string& currentPath, std::vector<ModuleDe
     if (!p.has_extension() || p.extension() != ".gbpp") p += ".gbpp";
     std::string absPath = fs::absolute(p).string();
 
-    if (visited.count(absPath)) return;
+    if (visited.count(absPath)) {
+        divo::Logger::instance().log(divo::LogLevel::TRACE, "Module already visited, skipping: " + absPath);
+        return;
+    }
     visited.insert(absPath);
+
+    divo::Logger::instance().log(divo::LogLevel::DEBUG, "Resolving module dependencies for: " + absPath);
 
     std::ifstream file(absPath);
     if (!file.is_open()) {
+        divo::Logger::instance().log(divo::LogLevel::FATAL, "Could not open file: " + absPath);
         divo::print_err_fatal("Could not open file: " + absPath);
         exit(1);
     }
-    std::string content((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
 
+    std::string content((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+    divo::Logger::instance().log(divo::LogLevel::TRACE, "File read successfully (" + std::to_string(content.size()) + " bytes). Starting Lexer.");
+
+    divo::Timer lexTimer;
     gbpp::Lexer lexer(content, absPath);
-    gbpp::Parser parser(lexer.tokenize());
+    auto tokens = lexer.tokenize();
+    divo::Logger::instance().log(divo::LogLevel::TRACE, "Lexing complete in " + std::to_string(lexTimer.elapsed()) + "ms (" + std::to_string(tokens.size()) + " tokens).");
+
+    divo::Timer parseTimer;
+    gbpp::Parser parser(tokens);
     auto prog = parser.parse();
+
     if (parser.hasErrors) {
+        divo::Logger::instance().log(divo::LogLevel::ERR, "Parser encountered fatal syntax errors in: " + absPath);
         divo::print_item_err("Syntax errors found in " + absPath + ":");
         for (const auto& err : parser.errors) {
+            divo::Logger::instance().log(divo::LogLevel::ERR, "  Syntax Error: " + err);
             divo::print_item_err("  " + err);
         }
         exit(1);
     }
-    if (!prog) exit(1);
+    if (!prog) {
+        divo::Logger::instance().log(divo::LogLevel::FATAL, "AST generation yielded null program for: " + absPath);
+        exit(1);
+    }
+
+    divo::Logger::instance().log(divo::LogLevel::TRACE, "Parsing complete in " + std::to_string(parseTimer.elapsed()) + "ms. AST extracted successfully.");
 
     std::filesystem::path currentDir = p.parent_path();
     for (const auto& imp : prog->imports) {
@@ -101,6 +123,7 @@ void loadImportsRecursively(const std::string& currentPath, std::vector<ModuleDe
         if (impIsLib) {
             targetPath = fs::current_path() / "libs" / (imp->path + ".gbpp");
             if (!fs::exists(targetPath)) {
+                divo::Logger::instance().log(divo::LogLevel::WARN, "Library " + imp->path + " not found locally. Falling back to DIVO_HOME.");
                 const char* envHome = std::getenv("DIVO_HOME");
                 if (envHome) targetPath = fs::path(envHome) / "libs" / (imp->path + ".gbpp");
             }
@@ -108,9 +131,11 @@ void loadImportsRecursively(const std::string& currentPath, std::vector<ModuleDe
         else {
             targetPath = currentDir / imp->path;
         }
+        divo::Logger::instance().log(divo::LogLevel::DEBUG, "Import directive detected: " + targetPath.string());
         loadImportsRecursively(targetPath.string(), modules, visited, impIsLib);
     }
 
+    divo::Logger::instance().log(divo::LogLevel::DEBUG, "Successfully staged module: " + absPath);
     modules.push_back({ absPath, std::move(prog), isLib, "" });
 }
 
@@ -269,6 +294,9 @@ void cmdBuild(int argc, char* argv[]) {
     fs::create_directories(cacheDir);
 
     divo::Logger::instance().init(logsDir + "/build.log");
+    divo::Logger::instance().log(divo::LogLevel::INFO, "Initiating build for project: " + config.projectName);
+    divo::Logger::instance().log(divo::LogLevel::INFO, "Target Triple: " + targetTriple + " | Profile: " + profile);
+    divo::Logger::instance().log(divo::LogLevel::DEBUG, "DumpIR=" + std::to_string(dumpIr) + ", DumpASM=" + std::to_string(dumpAsm) + ", Opt=" + std::to_string(enableOpt));
 
     divo::print_header("Building " + config.projectName + " (Unity Build Target: " + targetName + ")");
     divo::Timer totalTime;
@@ -308,14 +336,19 @@ void cmdBuild(int argc, char* argv[]) {
     }
 
     divo::print_item("Resolved and merged " + std::to_string(modules.size()) + " files into Unity AST.");
+    divo::Logger::instance().log(divo::LogLevel::INFO, "Total Unified Functions: " + std::to_string(stats.functions));
+    divo::Logger::instance().log(divo::LogLevel::TRACE, "Computed Project Hash state: " + std::to_string(projectHash));
+
     auto t_frontend = recordTiming("Frontend Lex/Parse/Merge", t_start);
 
     divo::print_group("Middle-end Pipeline (Sema & IRGen)");
+    divo::Logger::instance().log(divo::LogLevel::DEBUG, "Spawning Semantic Analyzer pass...");
 
     std::vector<gbpp::Program*> progPtrs = { &mergedProgram };
 
     gbpp::Sema analyzer;
     if (!analyzer.analyzeModules(progPtrs)) {
+        divo::Logger::instance().log(divo::LogLevel::ERR, "Semantic Verification aborted compilation.");
         divo::print_item_err("Semantic Analysis Failed");
         return;
     }
@@ -325,6 +358,8 @@ void cmdBuild(int argc, char* argv[]) {
     gbpp::Target backendTarget = gbpp::Target::Win64;
     if (target.arch == "esp32") backendTarget = gbpp::Target::SystemV;
     else if (target.os == "linux" || target.os == "macos") backendTarget = gbpp::Target::SystemV;
+
+    divo::Logger::instance().log(divo::LogLevel::DEBUG, "Backend configured. Mapped Target OS/Arch -> " + std::to_string(static_cast<int>(backendTarget)));
 
     std::string objExt = (target.os == "linux") ? ".o" : ".obj";
     std::string projectObjPath = objDir + "/" + config.projectName + objExt;
@@ -337,11 +372,23 @@ void cmdBuild(int argc, char* argv[]) {
     if (fs::exists(hashPath) && fs::exists(projectObjPath)) {
         std::ifstream hf(hashPath);
         size_t oldHash = 0;
-        if (hf >> oldHash && oldHash == projectHash) rebuild = false;
+        if (hf >> oldHash && oldHash == projectHash) {
+            rebuild = false;
+            divo::Logger::instance().log(divo::LogLevel::INFO, "Cache HIT. Project hash matched (" + std::to_string(oldHash) + "). Skipping codegen phase.");
+        }
+        else {
+            divo::Logger::instance().log(divo::LogLevel::INFO, "Cache MISS. Project hash diverged or missing (" + std::to_string(oldHash) + " != " + std::to_string(projectHash) + "). Forced rebuild.");
+        }
     }
 
-    if (dumpIr && !fs::exists(targetBase + "/ir/" + config.projectName + ".ir")) rebuild = true;
-    if (dumpAsm && !fs::exists(targetBase + "/asm/" + config.projectName + ".asm")) rebuild = true;
+    if (dumpIr && !fs::exists(targetBase + "/ir/" + config.projectName + ".ir")) {
+        rebuild = true;
+        divo::Logger::instance().log(divo::LogLevel::DEBUG, "Forcing rebuild due to missing IR dump output requirement.");
+    }
+    if (dumpAsm && !fs::exists(targetBase + "/asm/" + config.projectName + ".asm")) {
+        rebuild = true;
+        divo::Logger::instance().log(divo::LogLevel::DEBUG, "Forcing rebuild due to missing ASM dump output requirement.");
+    }
 
     if (rebuild) {
         needsLink = true;
@@ -486,6 +533,7 @@ void printHelp(const std::string& command = "") {
 
 int main(int argc, char* argv[]) {
     divo::enableVirtualTerminal();
+    divo::print_header(std::string("Divo ") + DIVO_VERSION + " (c) All Rights Reserved");
 
     if (argc < 2) {
         printHelp();
