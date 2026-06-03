@@ -1248,20 +1248,35 @@ namespace gbpp {
                                     }
                                 }
                             }
-                            if (inst.op == OpCode::MUL) {
+                            if (inst.op == OpCode::MUL || inst.op == OpCode::DIV) {
                                 if (!isConst(inst.src1, 0) && isConst(inst.src2, inst.imm)) {
                                     uint64_t c = getConst(inst.src2, inst.imm);
-                                    if (c == 1) {
+                                    if (inst.op == OpCode::MUL && c == 1) {
                                         inst.op = OpCode::MOV;
                                         inst.src2 = -1;
                                         inst.imm = 0;
                                         changed = true;
                                     }
-                                    else if (c == 0) {
+                                    else if (inst.op == OpCode::MUL && c == 0) {
                                         inst.op = OpCode::CONST;
                                         inst.src1 = -1;
                                         inst.src2 = -1;
                                         inst.imm = 0;
+                                        changed = true;
+                                    }
+                                    else if (inst.op == OpCode::DIV && c == 1) {
+                                        inst.op = OpCode::MOV;
+                                        inst.src2 = -1;
+                                        inst.imm = 0;
+                                        changed = true;
+                                    }
+                                    else if (c > 0 && (c & (c - 1)) == 0) {
+                                        uint64_t shift = 0;
+                                        uint64_t temp = c;
+                                        while ((temp & 1) == 0) { temp >>= 1; shift++; }
+                                        inst.op = (inst.op == OpCode::MUL) ? OpCode::SHL : OpCode::SHR;
+                                        inst.imm = shift;
+                                        inst.src2 = -1;
                                         changed = true;
                                     }
                                 }
@@ -1402,15 +1417,50 @@ namespace gbpp {
 
 
 
-                            if (inst.op == OpCode::ADD && inst.src2 == -1) {
-                                int base = inst.src1;
-                                uint64_t offset = inst.imm;
-                                if (ptrBase.count(base)) {
-                                    offset += ptrOffset[base];
-                                    base = ptrBase[base];
+                            if (inst.op == OpCode::ADD) {
+                                if (isConst(inst.src1, inst.imm) && isConst(inst.src2, inst.imm)) {
+                                    uint64_t c1 = getConst(inst.src1, inst.imm);
+                                    uint64_t c2 = getConst(inst.src2, inst.imm);
+                                    inst.op = OpCode::CONST;
+                                    inst.src1 = -1; inst.src2 = -1;
+                                    inst.imm = c1 + c2;
+                                    changed = true;
                                 }
-                                ptrBase[inst.dest] = base;
-                                ptrOffset[inst.dest] = offset;
+                                else if (!isConst(inst.src1, inst.imm) && isConst(inst.src2, inst.imm) && inst.src2 != -1) {
+                                    uint64_t c2 = getConst(inst.src2, inst.imm);
+                                    inst.src2 = -1;
+                                    inst.imm = c2;
+                                    changed = true;
+                                }
+                                else if (isConst(inst.src1, inst.imm) && !isConst(inst.src2, inst.imm) && inst.src1 != -1) {
+                                    uint64_t c1 = getConst(inst.src1, inst.imm);
+                                    inst.src1 = inst.src2;
+                                    inst.src2 = -1;
+                                    inst.imm = c1;
+                                    changed = true;
+                                }
+                            }
+                            else if (inst.op == OpCode::SUB) {
+                                if (isConst(inst.src1, inst.imm) && isConst(inst.src2, inst.imm)) {
+                                    uint64_t c1 = getConst(inst.src1, inst.imm);
+                                    uint64_t c2 = getConst(inst.src2, inst.imm);
+                                    inst.op = OpCode::CONST;
+                                    inst.src1 = -1; inst.src2 = -1;
+                                    inst.imm = c1 - c2;
+                                    changed = true;
+                                }
+                                else if (!isConst(inst.src1, inst.imm) && isConst(inst.src2, inst.imm) && inst.src2 != -1) {
+                                    uint64_t c2 = getConst(inst.src2, inst.imm);
+                                    inst.src2 = -1;
+                                    inst.imm = c2;
+                                    changed = true;
+                                }
+                            }
+                            else if (inst.op == OpCode::CAST || inst.op == OpCode::MOV) {
+                                if (inst.src1 != -1 && ptrBase.count(inst.src1)) {
+                                    ptrBase[inst.dest] = ptrBase[inst.src1];
+                                    ptrOffset[inst.dest] = ptrOffset[inst.src1];
+                                }
                             }
                             else if (inst.op == OpCode::ALLOC || inst.op == OpCode::GET_PARAM) {
                                 ptrBase[inst.dest] = inst.dest;
@@ -1495,8 +1545,18 @@ namespace gbpp {
                                     sizeMap[offset] = inst.bytes;
                                     storeMap[offset] = newInsts.size();
                                 }
-                                else {
-                                    memStateReg.clear(); memStateImm.clear(); memStateSize.clear(); lastStoreIdx.clear();
+                                else{
+                                    int storeBase = (inst.src1 != -1 && ptrBase.count(inst.src1)) ? ptrBase[inst.src1] : -1;
+
+                                    if (storeBase != -1) {
+                                        memStateReg.erase(storeBase);
+                                        memStateImm.erase(storeBase);
+                                        memStateSize.erase(storeBase);
+                                        lastStoreIdx.erase(storeBase);
+                                    }
+                                    else {
+                                        memStateReg.clear(); memStateImm.clear(); memStateSize.clear(); lastStoreIdx.clear();
+                                    }
                                 }
                             }
                             else if (inst.op == OpCode::LOAD && inst.src1 != -1) {
@@ -1622,6 +1682,83 @@ namespace gbpp {
 
 
 
+            bool loopVectorizerChanged = true;
+            while (loopVectorizerChanged) {
+                loopVectorizerChanged = false;
+                for (auto& fn : mod.functions) {
+                    for (size_t bIdx = 0; bIdx < fn.blocks.size(); ++bIdx) {
+                        auto& block = fn.blocks[bIdx];
+                        if (block->instructions.empty()) continue;
+                        auto& lastInst = block->instructions.back();
+                        if (lastInst.op == OpCode::JMP && lastInst.imm <= block->id) {
+                            int indReg = -1;
+                            for (auto& inst : block->instructions) {
+                                if (inst.op == OpCode::ADD && inst.dest == inst.src1 && inst.src2 == -1 && inst.imm == 1) {
+                                    indReg = inst.dest;
+                                    break;
+                                }
+                            }
+
+                            if (indReg != -1) {
+                                int storeIdx = -1;
+                                int addrReg = -1;
+                                for (size_t j = 0; j < block->instructions.size(); ++j) {
+                                    auto& inst = block->instructions[j];
+                                    if (inst.op == OpCode::STORE && inst.bytes == 4) {
+                                        storeIdx = j;
+                                        addrReg = inst.src1;
+                                        break;
+                                    }
+                                }
+
+                                if (storeIdx != -1) {
+                                    std::vector<Instruction> unrolled;
+                                    for (size_t j = 0; j < block->instructions.size(); ++j) {
+                                        auto& inst = block->instructions[j];
+
+                                        if (j == storeIdx) {
+                                            unrolled.push_back(inst);
+                                            for (int offset = 4; offset <= 12; offset += 4) {
+                                                int nextAddr = fn.allocVReg();
+                                                unrolled.push_back({ OpCode::ADD, nextAddr, addrReg, -1, (uint64_t)offset, 8 });
+
+                                                Instruction nextStore = inst;
+                                                nextStore.src1 = nextAddr;
+                                                unrolled.push_back(nextStore);
+                                            }
+                                        }
+                                        else if (inst.op == OpCode::ADD && inst.dest == indReg && inst.imm == 1) {
+                                            Instruction vecStep = inst;
+                                            vecStep.imm = 4;
+                                            unrolled.push_back(vecStep);
+                                        }
+                                        else {
+                                            unrolled.push_back(inst);
+                                        }
+                                    }
+
+                                    block->instructions = std::move(unrolled);
+                                    loopVectorizerChanged = true;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+                if (loopVectorizerChanged) globalPassChanged = true;
+            }
+
+
+
+
+
+
+
+
+
+
+
+
             bool sroaChanged = true;
             bool anySroaChanged = false;
             while (sroaChanged) {
@@ -1646,12 +1783,47 @@ namespace gbpp {
                         }
                     }
 
+                    std::map<int, uint64_t> sroaConsts;
+                    std::map<int, int> assignCount;
+                    for (auto& block : fn.blocks) {
+                        for (auto& inst : block->instructions) {
+                            if (inst.dest != -1) {
+                                if (inst.op == OpCode::CONST) {
+                                    sroaConsts[inst.dest] = inst.imm;
+                                    assignCount[inst.dest]++;
+                                }
+                                else if (inst.op == OpCode::MOV || inst.op == OpCode::CAST || inst.op == OpCode::ZEXT || inst.op == OpCode::TRUNC) {
+                                    assignCount[inst.dest]++;
+                                }
+                            }
+                        }
+                    }
+
+                    bool constsChanged = true;
+                    while (constsChanged) {
+                        constsChanged = false;
+                        for (auto& block : fn.blocks) {
+                            for (auto& inst : block->instructions) {
+                                if (inst.dest != -1 && assignCount[inst.dest] == 1) {
+                                    if (inst.op == OpCode::MOV || inst.op == OpCode::CAST || inst.op == OpCode::ZEXT || inst.op == OpCode::TRUNC) {
+                                        if (inst.src1 != -1 && sroaConsts.count(inst.src1)) {
+                                            if (!sroaConsts.count(inst.dest)) {
+                                                sroaConsts[inst.dest] = sroaConsts[inst.src1];
+                                                constsChanged = true;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     bool trackingChanged = true;
                     while (trackingChanged) {
                         trackingChanged = false;
                         for (auto& block : fn.blocks) {
                             for (auto& inst : block->instructions) {
-                                if ((inst.op == OpCode::MOV || inst.op == OpCode::CAST) && inst.dest != -1) {
+                                if ((inst.op == OpCode::MOV || inst.op == OpCode::CAST || inst.op == OpCode::ZEXT || inst.op == OpCode::TRUNC) && inst.dest != -1) {
                                     if (rootBase.count(inst.src1) && !rootBase.count(inst.dest)) {
                                         rootBase[inst.dest] = rootBase[inst.src1];
                                         rootOffset[inst.dest] = rootOffset[inst.src1];
@@ -1659,10 +1831,21 @@ namespace gbpp {
                                     }
                                 }
 
-                                if (inst.op == OpCode::ADD && inst.dest != -1 && inst.src2 == -1) {
-                                    if (rootBase.count(inst.src1) && !rootBase.count(inst.dest)) {
+                                if (inst.op == OpCode::ADD && inst.dest != -1) {
+                                    int offset = 0;
+                                    bool valid = false;
+                                    if (inst.src2 == -1) {
+                                        offset = static_cast<int>(inst.imm);
+                                        valid = true;
+                                    }
+                                    else if (sroaConsts.count(inst.src2)) {
+                                        offset = static_cast<int>(sroaConsts[inst.src2]);
+                                        valid = true;
+                                    }
+
+                                    if (valid && rootBase.count(inst.src1) && !rootBase.count(inst.dest)) {
                                         rootBase[inst.dest] = rootBase[inst.src1];
-                                        rootOffset[inst.dest] = rootOffset[inst.src1] + static_cast<int>(inst.imm);
+                                        rootOffset[inst.dest] = rootOffset[inst.src1] + offset;
                                         trackingChanged = true;
                                     }
                                 }
