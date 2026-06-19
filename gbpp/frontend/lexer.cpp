@@ -75,6 +75,12 @@ namespace gbpp {
 
         static const std::unordered_map<std::string, TokenType> keywords = {
             {"namespace", TokenType::Namespace},
+            {"comptime", TokenType::Comptime},
+            {"__builtin_allocate", TokenType::BuiltinAllocate},
+            {"compiler", TokenType::Compiler},
+            {"variadic", TokenType::Variadic},
+            {"expand", TokenType::Expand},
+            {"alignof", TokenType::Alignof},
             {"break", TokenType::Break},
             {"fn", TokenType::Fn},
             {"asm", TokenType::Asm},
@@ -83,7 +89,6 @@ namespace gbpp {
             {"struct", TokenType::Struct},
             {"enum", TokenType::Enum},
             {"alias", TokenType::Alias},
-            {"alloc", TokenType::Alloc},
             {"sizeof", TokenType::Sizeof},
             {"owner", TokenType::Owner},
             {"ref", TokenType::Ref},

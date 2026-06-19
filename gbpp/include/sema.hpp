@@ -11,6 +11,7 @@ namespace gbpp {
         std::unordered_map<std::string, Type*> variables;
         std::set<std::string> ownedVars;
         std::set<std::string> freedVars;
+        std::set<std::string> movedVars;
         Scope* parent = nullptr;
     };
 
@@ -60,6 +61,7 @@ namespace gbpp {
         void checkBlock(BlockStmt& block);
         void checkStmt(Stmt& stmt);
 
+        bool evaluateComptimeBool(Expr* expr);
         void checkExpr(Expr& expr);
     };
 

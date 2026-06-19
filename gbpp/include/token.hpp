@@ -10,13 +10,14 @@ namespace gbpp {
         EndOfFile,
         Identifier, IntLiteral, FloatLiteral, StringLiteral, CharLiteral,
         Namespace,
-
+        Comptime, BuiltinAllocate, Compiler,
+        Variadic, Expand, Alignof,
         Asm, AsmBlock,
 
         HashImport, Lib,
 
         Fn, Return, Struct, Enum, Alias,
-        Alloc, Sizeof,
+        Sizeof,
         Owner, Ref,
         PipePipe,
         AmpAmp,

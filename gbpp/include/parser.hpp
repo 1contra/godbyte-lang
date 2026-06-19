@@ -55,6 +55,7 @@ namespace gbpp {
         std::unique_ptr<Expr> parseTerm();
         std::unique_ptr<Expr> parseFactor();
         std::unique_ptr<Expr> parsePrimary();
+        std::unique_ptr<Expr> parseCompilerIntrinsic();
         std::unique_ptr<Expr> parseBitwise();
         std::unique_ptr<Expr> parseShift();
     };

@@ -414,6 +414,28 @@ namespace gbpp {
                 changed = false;
                 for (auto& block : mirFn.blocks) {
                     std::vector<MachineInstr> newInsts;
+
+                    auto isSafeToFold = [&](int midReg, size_t startIdx) {
+                        if (midReg == REG_R10 || midReg == REG_R11) return true;
+                        for (size_t j = startIdx; j < block.insts.size(); ++j) {
+                            const auto& fInst = block.insts[j];
+                            bool reads = false, writes = false;
+                            for (size_t k = 0; k < fInst.operands.size(); ++k) {
+                                const auto& op = fInst.operands[k];
+                                if (op.isReg() && op.reg == midReg) {
+                                    if (k == 0 && (fInst.opcode == MInstOpcode::X86_MOVrr || fInst.opcode == MInstOpcode::X86_MOVri || fInst.opcode == MInstOpcode::X86_MOVrm || fInst.opcode == MInstOpcode::X86_MOVZX || fInst.opcode == MInstOpcode::X86_LEAr || fInst.opcode == MInstOpcode::X86_LEAm)) writes = true;
+                                    else reads = true;
+                                }
+                                if (op.isMem() && op.mem.baseReg == midReg) reads = true;
+                            }
+                            if (fInst.opcode == MInstOpcode::X86_CALLpcrel || fInst.opcode == MInstOpcode::X86_CALLr) reads = true;
+                            if (fInst.opcode == MInstOpcode::X86_RET && midReg == REG_RAX) reads = true;
+                            if (reads) return false;
+                            if (writes) return true;
+                        }
+                        return true;
+                        };
+
                     for (size_t i = 0; i < block.insts.size(); ++i) {
                         auto& inst = block.insts[i];
 
@@ -429,7 +451,7 @@ namespace gbpp {
                                 next.operands[0].reg == inst.operands[1].mem.baseReg &&
                                 next.operands[1].reg == inst.operands[0].reg) {
 
-                                MachineInstr addInst; 
+                                MachineInstr addInst;
                                 addInst.opcode = MInstOpcode::X86_ADDri;
                                 addInst.operands.push_back(next.operands[0]);
                                 addInst.operands.push_back(MachineOperand::createImm(inst.operands[1].mem.offset, next.operands[0].size));
@@ -443,19 +465,61 @@ namespace gbpp {
                             auto& math = block.insts[i + 1];
                             auto& movBack = block.insts[i + 2];
 
-                            bool isMath = (math.opcode == MInstOpcode::X86_ADDri || math.opcode == MInstOpcode::X86_SUBri);
-                            if (isMath && movBack.opcode == MInstOpcode::X86_MOVrr) {
-                                if (math.operands[0].reg == inst.operands[0].reg &&
-                                    movBack.operands[1].reg == inst.operands[0].reg &&
-                                    movBack.operands[0].reg == inst.operands[1].reg) {
+                            // Recognize both Immediate Math AND Register Math
+                            bool isMathImm = (math.opcode == MInstOpcode::X86_ADDri || math.opcode == MInstOpcode::X86_SUBri || math.opcode == MInstOpcode::X86_IMULrri);
+                            bool isMathReg = (math.opcode == MInstOpcode::X86_ADDrr || math.opcode == MInstOpcode::X86_SUBrr ||
+                                math.opcode == MInstOpcode::X86_ORrr || math.opcode == MInstOpcode::X86_XORrr ||
+                                math.opcode == MInstOpcode::X86_ANDrr || math.opcode == MInstOpcode::X86_IMULrr);
 
-                                    MachineInstr directMath;
-                                    directMath.opcode = math.opcode;
-                                    directMath.operands.push_back(movBack.operands[0]);
-                                    directMath.operands.push_back(math.operands[1]);
+                            if ((isMathImm || isMathReg) && movBack.opcode == MInstOpcode::X86_MOVrr) {
+                                int r1 = inst.operands[0].reg;
+                                int r2 = inst.operands[1].reg;
 
-                                    newInsts.push_back(directMath);
-                                    i += 2; changed = true; continue;
+                                // Ensure registers and sizes match correctly
+                                if (math.operands[0].reg == r1 && movBack.operands[1].reg == r1 &&
+                                    inst.operands[0].size == movBack.operands[0].size &&
+                                    inst.operands[0].size == math.operands[0].size) {
+
+                                    int r4 = movBack.operands[0].reg;
+
+                                    if (r4 == r2) {
+                                        MachineInstr directMath = math;
+                                        directMath.operands[0] = movBack.operands[0];
+                                        newInsts.push_back(directMath);
+                                        i += 2; changed = true; continue;
+                                    }
+
+                                    if (isSafeToFold(r1, i + 3)) {
+                                        if (isMathReg) {
+                                            int r3 = math.operands[1].reg;
+
+                                            if (r4 == r3) {
+                                                if (math.opcode == MInstOpcode::X86_ADDrr || math.opcode == MInstOpcode::X86_ORrr ||
+                                                    math.opcode == MInstOpcode::X86_XORrr || math.opcode == MInstOpcode::X86_ANDrr ||
+                                                    math.opcode == MInstOpcode::X86_IMULrr) {
+                                                    MachineInstr directMath = math;
+                                                    directMath.operands[0] = movBack.operands[0];
+                                                    directMath.operands[1] = inst.operands[1];
+                                                    newInsts.push_back(directMath);
+                                                    i += 2; changed = true; continue;
+                                                }
+                                            }
+                                            else if (r4 != r2) {
+                                                newInsts.push_back({ MInstOpcode::X86_MOVrr, { movBack.operands[0], inst.operands[1] } });
+                                                MachineInstr directMath = math;
+                                                directMath.operands[0] = movBack.operands[0];
+                                                newInsts.push_back(directMath);
+                                                i += 2; changed = true; continue;
+                                            }
+                                        }
+                                        else if (isMathImm) {
+                                            newInsts.push_back({ MInstOpcode::X86_MOVrr, { movBack.operands[0], inst.operands[1] } });
+                                            MachineInstr directMath = math;
+                                            directMath.operands[0] = movBack.operands[0];
+                                            newInsts.push_back(directMath);
+                                            i += 2; changed = true; continue;
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -474,7 +538,7 @@ namespace gbpp {
 
                             if (inst.opcode == MInstOpcode::X86_MOVrr && next.opcode == MInstOpcode::X86_MOVrr) {
                                 if (inst.operands[0].reg == next.operands[1].reg) {
-                                    if (inst.operands[0].reg == REG_R10 || inst.operands[0].reg == REG_R11 || inst.operands[0].reg == REG_RAX) {
+                                    if (isSafeToFold(inst.operands[0].reg, i + 2)) {
                                         newInsts.push_back({ MInstOpcode::X86_MOVrr, { next.operands[0], inst.operands[1] } });
                                         i++; changed = true; continue;
                                     }
@@ -489,34 +553,34 @@ namespace gbpp {
                             }
 
                             if (inst.opcode == MInstOpcode::X86_MOVrm && next.opcode == MInstOpcode::X86_MOVrr) {
-                                if (inst.operands[0].reg == REG_R10 && inst.operands[0].reg == next.operands[1].reg) {
-                                    MachineOperand memSrc = inst.operands[1];
-                                    MachineOperand finalDst = next.operands[0];
-
-                                    newInsts.push_back({ MInstOpcode::X86_MOVrm, { finalDst, memSrc } });
-                                    i++; changed = true; continue;
+                                if (inst.operands[0].reg == next.operands[1].reg) {
+                                    if (isSafeToFold(inst.operands[0].reg, i + 2)) {
+                                        MachineOperand memSrc = inst.operands[1];
+                                        MachineOperand finalDst = next.operands[0];
+                                        newInsts.push_back({ MInstOpcode::X86_MOVrm, { finalDst, memSrc } });
+                                        i++; changed = true; continue;
+                                    }
                                 }
                             }
 
                             if (inst.opcode == MInstOpcode::X86_MOVZX && next.opcode == MInstOpcode::X86_MOVrr) {
                                 if (inst.operands[0].reg == next.operands[1].reg) {
-                                    MachineOperand newDst = next.operands[0];
-                                    newInsts.push_back({ MInstOpcode::X86_MOVZX, { newDst, inst.operands[1] } });
-                                    i++; changed = true; continue;
+                                    if (isSafeToFold(inst.operands[0].reg, i + 2)) {
+                                        MachineOperand newDst = next.operands[0];
+                                        newInsts.push_back({ MInstOpcode::X86_MOVZX, { newDst, inst.operands[1] } });
+                                        i++; changed = true; continue;
+                                    }
                                 }
                             }
 
                             if (inst.opcode == MInstOpcode::X86_MOVri &&
                                 (next.opcode == MInstOpcode::X86_MOVZX || next.opcode == MInstOpcode::X86_MOVrr)) {
                                 if (inst.operands[0].reg == next.operands[1].reg) {
-                                    if (inst.operands[0].reg == REG_R10 || inst.operands[0].reg == REG_R11 || inst.operands[0].reg == REG_RAX) {
+                                    if (isSafeToFold(inst.operands[0].reg, i + 2)) {
                                         MachineOperand newDst = next.operands[0];
                                         MachineOperand newImm = MachineOperand::createImm(inst.operands[1].imm, newDst.size);
-
                                         newInsts.push_back({ MInstOpcode::X86_MOVri, { newDst, newImm } });
-                                        i++;
-                                        changed = true;
-                                        continue;
+                                        i++; changed = true; continue;
                                     }
                                 }
                             }
@@ -639,6 +703,32 @@ namespace gbpp {
                                 foldLoads[srcReg] = defInst;
                             }
                         }
+                    }
+                }
+            }
+
+            std::map<int, int> allocUses;
+            for (const auto& block : fn.blocks) {
+                for (const auto& inst : block->instructions) {
+                    if (inst.op == OpCode::STORE) {
+                        if (inst.src2 != -1) allocUses[inst.src2]++;
+                    }
+                    else if (inst.op == OpCode::LOAD) {
+
+                    }
+                    else if (inst.op == OpCode::ADD) {
+                        if (inst.dest != -1 && foldOffsets.count(inst.dest)) {
+
+                        }
+                        else {
+                            if (inst.src1 != -1) allocUses[inst.src1]++;
+                            if (inst.src2 != -1) allocUses[inst.src2]++;
+                        }
+                    }
+                    else if (inst.op != OpCode::ALLOC) {
+                        if (inst.src1 != -1) allocUses[inst.src1]++;
+                        if (inst.src2 != -1) allocUses[inst.src2]++;
+                        for (int arg : inst.args) if (arg != -1) allocUses[arg]++;
                     }
                 }
             }
@@ -791,18 +881,23 @@ namespace gbpp {
                         }
 
                         MachineOperand srcMem = resolveOp(baseReg, 8);
-                        if (srcMem.isMem()) {
-                            auto r11 = MachineOperand::createReg(REG_R11, 8);
-                            mb.insts.push_back({ MInstOpcode::X86_MOVrm, { r11, srcMem } });
-                            srcMem = MachineOperand::createMem(REG_R11, offset, inst.bytes);
-                        }
-                        else if (srcMem.isImm()) {
-                            auto r11 = MachineOperand::createReg(REG_R11, 8);
-                            mb.insts.push_back({ MInstOpcode::X86_MOVri, { r11, srcMem } });
-                            srcMem = MachineOperand::createMem(REG_R11, offset, inst.bytes);
+                        if (allocOffsets.count(baseReg)) {
+                            srcMem = createFrameMem(-allocOffsets[baseReg] + offset, inst.bytes);
                         }
                         else {
-                            srcMem = MachineOperand::createMem(srcMem.reg, offset, inst.bytes);
+                            if (srcMem.isMem()) {
+                                auto r11 = MachineOperand::createReg(REG_R11, 8);
+                                mb.insts.push_back({ MInstOpcode::X86_MOVrm, { r11, srcMem } });
+                                srcMem = MachineOperand::createMem(REG_R11, offset, inst.bytes);
+                            }
+                            else if (srcMem.isImm()) {
+                                auto r11 = MachineOperand::createReg(REG_R11, 8);
+                                mb.insts.push_back({ MInstOpcode::X86_MOVri, { r11, srcMem } });
+                                srcMem = MachineOperand::createMem(REG_R11, offset, inst.bytes);
+                            }
+                            else {
+                                srcMem = MachineOperand::createMem(srcMem.reg, offset, inst.bytes);
+                            }
                         }
                         emitLirMov(mb.insts, resolveOp(inst.dest, inst.bytes), srcMem);
                         break;
@@ -816,18 +911,23 @@ namespace gbpp {
                         }
 
                         MachineOperand dstMem = resolveOp(baseReg, 8);
-                        if (dstMem.isMem()) {
-                            auto r11 = MachineOperand::createReg(REG_R11, 8);
-                            mb.insts.push_back({ MInstOpcode::X86_MOVrm, { r11, dstMem } });
-                            dstMem = MachineOperand::createMem(REG_R11, offset, inst.bytes);
-                        }
-                        else if (dstMem.isImm()) {
-                            auto r11 = MachineOperand::createReg(REG_R11, 8);
-                            mb.insts.push_back({ MInstOpcode::X86_MOVri, { r11, dstMem } });
-                            dstMem = MachineOperand::createMem(REG_R11, offset, inst.bytes);
+                        if (allocOffsets.count(baseReg)) {
+                            dstMem = createFrameMem(-allocOffsets[baseReg] + offset, inst.bytes);
                         }
                         else {
-                            dstMem = MachineOperand::createMem(dstMem.reg, offset, inst.bytes);
+                            if (dstMem.isMem()) {
+                                auto r11 = MachineOperand::createReg(REG_R11, 8);
+                                mb.insts.push_back({ MInstOpcode::X86_MOVrm, { r11, dstMem } });
+                                dstMem = MachineOperand::createMem(REG_R11, offset, inst.bytes);
+                            }
+                            else if (dstMem.isImm()) {
+                                auto r11 = MachineOperand::createReg(REG_R11, 8);
+                                mb.insts.push_back({ MInstOpcode::X86_MOVri, { r11, dstMem } });
+                                dstMem = MachineOperand::createMem(REG_R11, offset, inst.bytes);
+                            }
+                            else {
+                                dstMem = MachineOperand::createMem(dstMem.reg, offset, inst.bytes);
+                            }
                         }
 
                         MachineOperand srcVal = inst.src2 == -1 ? MachineOperand::createImm(inst.imm, inst.bytes) : resolveOp(inst.src2, inst.bytes);
@@ -916,13 +1016,16 @@ namespace gbpp {
                         int offset = allocOffsets[inst.dest];
                         MachineOperand mem = createFrameMem(-offset, 8);
                         MachineOperand dst = resolveOp(inst.dest, 8);
-                        if (dst.isMem()) {
-                            auto r11 = MachineOperand::createReg(REG_R11, 8);
-                            mb.insts.push_back({ MInstOpcode::X86_LEAr, { r11, mem } });
-                            mb.insts.push_back({ MInstOpcode::X86_MOVmr, { dst, r11 } });
-                        }
-                        else {
-                            mb.insts.push_back({ MInstOpcode::X86_LEAr, { dst, mem } });
+
+                        if (allocUses[inst.dest] > 0) {
+                            if (dst.isMem()) {
+                                auto r11 = MachineOperand::createReg(REG_R11, 8);
+                                mb.insts.push_back({ MInstOpcode::X86_LEAr, { r11, mem } });
+                                mb.insts.push_back({ MInstOpcode::X86_MOVmr, { dst, r11 } });
+                            }
+                            else {
+                                mb.insts.push_back({ MInstOpcode::X86_LEAr, { dst, mem } });
+                            }
                         }
                         break;
                     }

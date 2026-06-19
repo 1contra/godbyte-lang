@@ -621,17 +621,37 @@ namespace gbpp::lsp {
                     appendDocs(fn->loc);
                     resolved = true;
                 }
-                else if (!resolved && (currentSema->m_functions.count(scopedFqn) || currentSema->m_functions.count(fqn))) {
-                    auto fn = currentSema->m_functions.count(scopedFqn) ? currentSema->m_functions[scopedFqn] : currentSema->m_functions[fqn];
-                    std::string sig = "fn " + fn->name + "(";
+                else if (!resolved && (currentSema->m_functions.count(scopedFqn) || currentSema->m_functions.count(fqn) ||
+                    currentSema->m_generic_functions.count(scopedFqn) || currentSema->m_generic_functions.count(fqn))) {
+
+                    FunctionDecl* fn = nullptr;
+                    if (currentSema->m_functions.count(scopedFqn)) fn = currentSema->m_functions[scopedFqn];
+                    else if (currentSema->m_functions.count(fqn)) fn = currentSema->m_functions[fqn];
+                    else if (currentSema->m_generic_functions.count(scopedFqn)) fn = currentSema->m_generic_functions[scopedFqn];
+                    else if (currentSema->m_generic_functions.count(fqn)) fn = currentSema->m_generic_functions[fqn];
+
+                    std::string sig = "fn " + fn->name;
+
+                    if (!fn->genericParams.empty()) {
+                        sig += "<";
+                        for (size_t g = 0; g < fn->genericParams.size(); ++g) {
+                            if (fn->genericParams[g].isVariadic) sig += "variadic ";
+                            sig += fn->genericParams[g].name;
+                            if (g + 1 < fn->genericParams.size()) sig += ", ";
+                        }
+                        sig += ">";
+                    }
+
+                    sig += "(";
                     for (size_t p = 0; p < fn->params.size(); ++p) {
                         sig += fn->params[p].name + ": " + fn->params[p].parsedType.toString();
                         if (p + 1 < fn->params.size()) sig += ", ";
                     }
                     sig += "): " + fn->returnType.toString();
+
                     hoverMarkdown += makeCodeBlock(sig);
                     std::string meta;
-                    meta += makeBullet("Kind", "Function");
+                    meta += makeBullet("Kind", fn->genericParams.empty() ? "Function" : "Generic Function");
                     meta += makeBullet("Return Type", "`" + fn->returnType.toString() + "`");
                     hoverMarkdown += makeSection("Symbol Info", meta);
                     appendDocs(fn->loc);
@@ -901,15 +921,6 @@ namespace gbpp::lsp {
                             + makeSection(
                                 "Keyword",
                                 "Declares an enumeration."
-                            );
-                        break;
-
-                    case TokenType::Alloc:
-                        hoverMarkdown =
-                            makeCodeBlock("alloc<T>")
-                            + makeSection(
-                                "Builtin",
-                                "Allocates heap memory and returns an owner pointer."
                             );
                         break;
 
@@ -1683,8 +1694,12 @@ namespace gbpp::lsp {
                         if (!methodFullName.empty() && (currentSema->m_functions.count(methodFullName) || currentSema->m_generic_functions.count(methodFullName))) {
                             targetLoc = currentSema->m_functions.count(methodFullName) ? currentSema->m_functions[methodFullName]->loc : currentSema->m_generic_functions[methodFullName]->loc;
                         }
-                        else if (currentSema->m_functions.count(scopedFqn) || currentSema->m_functions.count(fqn)) {
-                            targetLoc = currentSema->m_functions.count(scopedFqn) ? currentSema->m_functions[scopedFqn]->loc : currentSema->m_functions[fqn]->loc;
+                        else if (currentSema->m_functions.count(scopedFqn) || currentSema->m_functions.count(fqn) ||
+                            currentSema->m_generic_functions.count(scopedFqn) || currentSema->m_generic_functions.count(fqn)) {
+                            if (currentSema->m_functions.count(scopedFqn)) targetLoc = currentSema->m_functions[scopedFqn]->loc;
+                            else if (currentSema->m_functions.count(fqn)) targetLoc = currentSema->m_functions[fqn]->loc;
+                            else if (currentSema->m_generic_functions.count(scopedFqn)) targetLoc = currentSema->m_generic_functions[scopedFqn]->loc;
+                            else if (currentSema->m_generic_functions.count(fqn)) targetLoc = currentSema->m_generic_functions[fqn]->loc;
                         }
                         else if (currentSema->m_structs.count(scopedFqn) || currentSema->m_structs.count(fqn) ||
                             currentSema->m_generic_structs.count(scopedFqn) || currentSema->m_generic_structs.count(fqn)) {
@@ -2099,7 +2114,9 @@ namespace gbpp::lsp {
         case TokenType::Null: case TokenType::Lib:
         case TokenType::Struct: case TokenType::True:
         case TokenType::False: case TokenType::Volatile:
-        case TokenType::Alloc: case TokenType::Sizeof:
+		case TokenType::Sizeof: case TokenType::Variadic:
+        case TokenType::Expand: case TokenType::Alignof:
+		case TokenType::Comptime: case TokenType::BuiltinAllocate:
             return 8;
         case TokenType::HashImport:
             return 8;

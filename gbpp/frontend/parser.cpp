@@ -153,7 +153,7 @@ namespace gbpp {
         std::string typeName;
 
         if (p.match(TokenType::Fn)) {
-            std::string typeName = "fn(";
+            typeName = "fn(";
             p.consume(TokenType::LParen, "Expect '(' after fn");
             if (!p.check(TokenType::RParen)) {
                 typeName += parseTypeString(p);
@@ -395,7 +395,7 @@ namespace gbpp {
         auto fn = std::make_unique<FunctionDecl>();
 
         Token nameTok;
-        if (check(TokenType::Identifier) || check(TokenType::Alloc) || check(TokenType::Sizeof)) {
+        if (check(TokenType::Identifier) || check(TokenType::Sizeof)) {
             nameTok = advance();
         }
         else {
@@ -407,14 +407,16 @@ namespace gbpp {
 
         if (match(TokenType::LT)) {
             do {
-                fn->genericParams.push_back({ consume(TokenType::Identifier, "Expect generic parameter name").text });
+                bool isVar = match(TokenType::Variadic);
+                std::string name = consume(TokenType::Identifier, "Expect generic parameter name").text;
+                fn->genericParams.push_back({ name, isVar });
             } while (match(TokenType::Comma));
             consumeGT("Expect '>' after generic parameters");
         }
 
         if (match(TokenType::DoubleColon)) {
             Token methodTok;
-            if (check(TokenType::Identifier) || check(TokenType::Alloc) || check(TokenType::Sizeof)) {
+            if (check(TokenType::Identifier) || check(TokenType::Sizeof)) {
                 methodTok = advance();
             }
             else {
@@ -508,6 +510,22 @@ namespace gbpp {
             if (!check(TokenType::Semicolon)) ret->value = parseExpression();
             consume(TokenType::Semicolon, "Expect ';'");
             return ret;
+        }
+        if (match(TokenType::Comptime)) {
+            consume(TokenType::If, "Expect 'if' after 'comptime'");
+            auto stmt = std::make_unique<ComptimeIfStmt>();
+            stmt->loc = previous().loc;
+            consume(TokenType::LParen, "Expect '(' after comptime if");
+            stmt->condition = parseExpression();
+            consume(TokenType::RParen, "Expect ')' after condition");
+            consume(TokenType::LBrace, "Expect '{' for comptime if block");
+            stmt->thenBranch = parseBlock();
+
+            if (match(TokenType::Else)) {
+                consume(TokenType::LBrace, "Expect '{' after else");
+                stmt->elseBranch = parseBlock();
+            }
+            return stmt;
         }
         if (match(TokenType::If)) return parseIfStatement();
         if (match(TokenType::While)) return parseWhileStatement();
@@ -775,6 +793,19 @@ namespace gbpp {
         else if (match(TokenType::Null)) {
             expr = std::make_unique<NullLiteral>();
         }
+        else if (match(TokenType::BuiltinAllocate)) {
+            auto alloc = std::make_unique<BuiltinAllocateExpr>();
+            alloc->loc = previous().loc;
+            consume(TokenType::LParen, "Expect '(' after __builtin_allocate");
+            alloc->sizeExpr = parseExpression();
+            consume(TokenType::Comma, "Expect ','");
+            alloc->alignExpr = parseExpression();
+            consume(TokenType::RParen, "Expect ')'");
+            expr = std::move(alloc);
+        }
+        else if (match(TokenType::Compiler)) {
+            expr = parseCompilerIntrinsic();
+        }
         else if (match(TokenType::True)) {
             auto lit = std::make_unique<IntLiteral>();
             lit->loc = previous().loc;
@@ -801,22 +832,22 @@ namespace gbpp {
             sz->parsedTargetType = pt;
             expr = std::move(sz);
         }
-        else if (match(TokenType::Alloc)) {
-            consume(TokenType::LT, "Expect '<' after alloc");
+        else if (match(TokenType::Alignof)) {
+            consume(TokenType::LT, "Expect '<' after alignof");
             ParsedType pt = parseType();
-            consumeGT("Expect '>' after type in alloc");
+            consumeGT("Expect '>' after type in alignof");
 
-            consume(TokenType::LParen, "Expect '(' after alloc<T>");
-
-            auto alloc = std::make_unique<AllocExpr>();
-            alloc->parsedTargetType = pt;
-
-            if (!check(TokenType::RParen)) {
-                do { alloc->args.push_back(parseExpression()); } while (match(TokenType::Comma));
-            }
-            consume(TokenType::RParen, "Expect ')' after alloc args");
-
-            expr = std::move(alloc);
+            auto al = std::make_unique<AlignofExpr>();
+            al->parsedTargetType = pt;
+            expr = std::move(al);
+        }
+        else if (match(TokenType::Expand)) {
+            consume(TokenType::LParen, "Expect '(' after expand");
+            auto exp = std::make_unique<ExpandExpr>();
+            exp->loc = previous().loc;
+            exp->operand = parseExpression();
+            consume(TokenType::RParen, "Expect ')'");
+            expr = std::move(exp);
         }
         else if (match(TokenType::IntLiteral)) {
             auto lit = std::make_unique<IntLiteral>();
@@ -853,6 +884,22 @@ namespace gbpp {
                 name += "::" + consume(TokenType::Identifier, "Expect identifier after ::").text;
             }
 
+            std::vector<ParsedType> genArgs;
+            if (check(TokenType::LT)) {
+                int savedPos = m_pos;
+                try {
+                    advance();
+                    do {
+                        genArgs.push_back(parseType());
+                    } while (match(TokenType::Comma));
+                    consumeGT("");
+                }
+                catch (...) {
+                    m_pos = savedPos;
+                    genArgs.clear();
+                }
+            }
+
             if (match(TokenType::LBrace)) {
                 auto structInit = std::make_unique<StructInitExpr>();
                 structInit->loc = identTok.loc;
@@ -883,6 +930,7 @@ namespace gbpp {
                 auto var = std::make_unique<VarExpr>();
                 var->loc = identTok.loc;
                 var->name = name;
+                var->genericArgs = genArgs;
                 expr = std::move(var);
             }
         }
@@ -941,6 +989,34 @@ namespace gbpp {
         }
 
         return expr;
+    }
+
+    std::unique_ptr<Expr> Parser::parseCompilerIntrinsic() {
+        Token startTok = previous();
+        consume(TokenType::Dot, "Expect '.' after 'compiler' keyword");
+        Token intrinsicName = consume(TokenType::Identifier, "Expect compiler intrinsic name");
+
+        if (intrinsicName.text == "has_method") {
+            auto hasMeth = std::make_unique<CompilerHasMethodExpr>();
+            hasMeth->loc = startTok.loc;
+
+            consume(TokenType::LParen, "Expect '(' after compiler.has_method");
+            hasMeth->parsedTargetType = parseType();
+            consume(TokenType::Comma, "Expect ','");
+
+            std::string rawStr = consume(TokenType::StringLiteral, "Expect string literal for method name").text;
+            hasMeth->methodName = rawStr.substr(1, rawStr.length() - 2);
+
+            consume(TokenType::RParen, "Expect ')'");
+            return hasMeth;
+        }
+        /* * Future additions go here cleanly:
+         * else if (intrinsicName.text == "is_pointer") { ... }
+         * else if (intrinsicName.text == "type_name") { ... }
+         */
+
+        throw std::runtime_error("Line " + std::to_string(intrinsicName.loc.line) + ":" +
+            std::to_string(intrinsicName.loc.col) + " - Unknown compiler intrinsic: '" + intrinsicName.text + "'");
     }
 
     std::unique_ptr<EnumDecl> Parser::parseEnum() {

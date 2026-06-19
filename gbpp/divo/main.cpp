@@ -490,42 +490,42 @@ void cmdBuild(int argc, char* argv[]) {
 }
 
 void printHelp(const std::string& command = "") {
-    divo::print_header("GodByte++ Build System Help");
-
     if (command.empty()) {
-        std::cout << "Usage: divo <command> [options]\n\n";
-        std::cout << "Commands:\n";
-        std::cout << "  init           Initialize a new project\n";
-        std::cout << "  build          Build the project\n";
-        std::cout << "  add <lib>      Add a library dependency\n";
-        std::cout << "  clean          Remove build artifacts\n";
-        std::cout << "  help [command] Show help for a command\n";
-        std::cout << "\nUse 'divo help <command>' for details.\n";
+        divo::print_item("Usage: divo <command> [options]");
+        divo::print_item("");
+        divo::print_item("Commands:");
+        divo::print_item("  init           Initialize a new project");
+        divo::print_item("  build          Build the project");
+        divo::print_item("  add <lib>      Add a library dependency");
+        divo::print_item("  clean          Remove build artifacts");
+        divo::print_item("  help [command] Show help for a command");
+        divo::print_item("");
+        divo::print_item("Use 'divo help <command>' for details.");
     }
     else if (command == "init") {
-        std::cout << "Usage: divo init\n";
-        std::cout << "Initializes a new GodByte++ project in the current directory.\n";
+        divo::print_item("Usage: divo init");
+        divo::print_item("Initializes a new GodByte++ project in the current directory.");
     }
     else if (command == "build") {
-        std::cout << "Usage: divo build [--target=<name>] [--ir] [--asm] [-O|--opt] [--tiny]\n";
-        std::cout << "Builds the project for the specified target.\n";
-        std::cout << "Options:\n";
-        std::cout << "  --target=<name>  Specify the target to build (default: desktop)\n";
-        std::cout << "  --ir             Dump the intermediate representation (IR)\n";
-        std::cout << "  --asm            Dump the assembly output\n";
-        std::cout << "  -O, --opt        Enable optimization passes\n";
-        std::cout << "  --tiny           Build minimal executable (Windows only)\n";
+        divo::print_item("Usage: divo build [--target=<name>] [--ir] [--asm] [-O|--opt] [--tiny]");
+        divo::print_item("Builds the project for the specified target.");
+        divo::print_item("Options:");
+        divo::print_item("  --target=<name>  Specify the target to build (default: desktop)");
+        divo::print_item("  --ir             Dump the intermediate representation (IR)");
+        divo::print_item("  --asm            Dump the assembly output");
+        divo::print_item("  -O, --opt        Enable optimization passes");
+        divo::print_item("  --tiny           Build minimal executable (Windows only)");
     }
     else if (command == "add") {
-        std::cout << "Usage: divo add <library_name>\n";
-        std::cout << "Fetches a library interface and binary from the registry and adds it to your project.\n";
+        divo::print_item("Usage: divo add <library_name>");
+        divo::print_item("Fetches a library interface and binary from the registry and adds it to your project.");
     }
     else if (command == "clean") {
-        std::cout << "Usage: divo clean\n";
-        std::cout << "Removes all build artifacts (build folder).\n";
+        divo::print_item("Usage: divo clean");
+        divo::print_item("Removes all build artifacts (build folder).");
     }
     else {
-        std::cerr << "Unknown command for help: " << command << "\n";
+        divo::print_item_err("Unknown command for help: " + command);
     }
 
     divo::print_footer("GodByte++ Help", true);

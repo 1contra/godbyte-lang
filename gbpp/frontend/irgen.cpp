@@ -29,13 +29,13 @@ namespace gbpp {
         }
 
         for (const auto& st : prog.structs) {
-            if (st->genericParams.empty()) {
+            if (st->genericParams.empty() || st->name.find('$') != std::string::npos) {
                 m_structMap[st->name] = st.get();
             }
         }
 
         for (const auto& fn : prog.functions) {
-            if (fn->genericParams.empty()) {
+            if (fn->genericParams.empty() || fn->name.find('$') != std::string::npos) {
                 genFunction(*fn);
             }
         }
@@ -473,13 +473,11 @@ namespace gbpp {
 
             return res;
         }
-        else if (auto alloc = dynamic_cast<const AllocExpr*>(&expr)) {
+        else if (auto bAlloc = dynamic_cast<const BuiltinAllocateExpr*>(&expr)) {
+            int sizeReg = genExpr(*bAlloc->sizeExpr);
+
             int oneReg = m_currentFunc->allocVReg();
             emit({ OpCode::CONST, oneReg, -1, -1, 1, 8 });
-            uint64_t structSize = alloc->resolvedTargetType->sizeBytes;
-
-            int sizeReg = m_currentFunc->allocVReg();
-            emit({ OpCode::CONST, sizeReg, -1, -1, structSize, 8 });
 
             int dest = m_currentFunc->allocVReg();
 
@@ -491,27 +489,21 @@ namespace gbpp {
             inst.argBytes = { 8, 8 };
             emit(inst);
 
-            if (!alloc->initMethodName.empty()) {
-                std::vector<int> argRegs;
-                std::vector<int> argBytes;
-
-                argRegs.push_back(dest);
-                argBytes.push_back(8);
-
-                for (auto& arg : alloc->args) {
-                    argRegs.push_back(genExpr(*arg));
-                    argBytes.push_back(arg->type ? arg->type->sizeBytes : 8);
-                }
-
-                Instruction initCall = { OpCode::CALL, -1, -1, -1, 0 };
-                initCall.args = argRegs;
-                initCall.argBytes = argBytes;
-                initCall.label = alloc->initMethodName;
-                emit(initCall);
-            }
-
             return dest;
         }
+        else if (auto hasMeth = dynamic_cast<const CompilerHasMethodExpr*>(&expr)) {
+            int d = m_currentFunc->allocVReg();
+            emit({ OpCode::CONST, d, -1, -1, (uint64_t)hasMeth->resultValue, 1 });
+            return d;
+        }
+        else if (auto al = dynamic_cast<const AlignofExpr*>(&expr)) {
+            int d = m_currentFunc->allocVReg();
+            emit({ OpCode::CONST, d, -1, -1, 8, 8 });
+            return d;
+        }
+        else if (auto exp = dynamic_cast<const ExpandExpr*>(&expr)) {
+                        return genExpr(*exp->operand);
+                        }
         else if (auto sizeExpr = dynamic_cast<const SizeofExpr*>(&expr)) {
             int d = m_currentFunc->allocVReg();
             uint64_t structSize = sizeExpr->resolvedTargetType->sizeBytes;
@@ -941,7 +933,14 @@ namespace gbpp {
                                         for (auto& tblock : target->blocks) {
                                             for (auto& tinst : tblock->instructions) {
                                                 if (tinst.op == OpCode::GET_PARAM) {
-                                                    vregMap[tinst.dest] = inst.args[tinst.imm];
+                                                    if (tinst.imm < inst.args.size()) {
+                                                        vregMap[tinst.dest] = inst.args[tinst.imm];
+                                                    }
+                                                    else {
+                                                        int dummy = fn.allocVReg();
+                                                        newInsts.push_back({ OpCode::CONST, dummy, -1, -1, 0, 8 });
+                                                        vregMap[tinst.dest] = dummy;
+                                                    }
                                                 }
                                                 else if (tinst.op == OpCode::RET) {
                                                     if (inst.dest != -1 && tinst.src1 != -1) {
@@ -1776,7 +1775,7 @@ namespace gbpp {
                                 rootOffset[inst.dest] = 0;
                             }
                             if (inst.op == OpCode::CALL && inst.label == "calloc" && inst.dest != -1) {
-                                escapes[inst.dest] = true;
+                                escapes[inst.dest] = false;
                                 rootBase[inst.dest] = inst.dest;
                                 rootOffset[inst.dest] = 0;
                             }
@@ -1859,6 +1858,7 @@ namespace gbpp {
 
                     std::map<int, std::vector<std::pair<int, int>>> sroaAccesses;
                     std::map<int, std::set<int>> sroaBlocks;
+                    std::map<int, std::set<int>> sroaDependencies;
 
                     for (auto& block : fn.blocks) {
                         for (auto& inst : block->instructions) {
@@ -1869,9 +1869,11 @@ namespace gbpp {
                             if (inst.op == OpCode::CALL || inst.op == OpCode::STORE_LOCAL || inst.op == OpCode::RET || inst.op == OpCode::GET_PARAM) {
                                 markEscape(inst.src1);
                                 markEscape(inst.src2);
-                                if (inst.op == OpCode::CALL || inst.op == OpCode::RET) markEscape(inst.dest);
                                 if (inst.op == OpCode::CALL) {
-                                    for (int arg : inst.args) markEscape(arg);
+                                    for (int arg : inst.args) {
+                                        if (inst.label == "free") continue;
+                                        markEscape(arg);
+                                    }
                                 }
                             }
                             if (inst.op == OpCode::STORE) {
@@ -1893,7 +1895,7 @@ namespace gbpp {
                                     sroaBlocks[base].insert(block->id);
 
                                     if (valReg != -1 && rootBase.count(valReg)) {
-                                        markEscape(valReg);
+                                        sroaDependencies[base].insert(rootBase[valReg]);
                                     }
                                 }
                                 else {
@@ -1934,6 +1936,21 @@ namespace gbpp {
                         if (overlap) escapes[base] = true;
                     }
 
+                    bool sroaPropChanged = true;
+                    while (sroaPropChanged) {
+                        sroaPropChanged = false;
+                        for (auto& kv : sroaDependencies) {
+                            if (escapes[kv.first]) {
+                                for (int val : kv.second) {
+                                    if (!escapes[val]) {
+                                        escapes[val] = true;
+                                        sroaPropChanged = true;
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     /*for (auto& kv : sroaBlocks) {
                         if (kv.second.size() > 1) {
                             escapes[kv.first] = true;
@@ -1954,6 +1971,15 @@ namespace gbpp {
                             }
                             if (inst.op == OpCode::CALL && inst.label == "calloc" && escapes.count(inst.dest) && !escapes[inst.dest]) {
                                 sroaChanged = true; continue;
+                            }
+
+                            if (inst.op == OpCode::CALL && inst.label == "free") {
+                                int ptrReg = inst.args.empty() ? -1 : inst.args[0];
+                                if (ptrReg != -1 && rootBase.count(ptrReg)) {
+                                    if (!escapes[rootBase[ptrReg]]) {
+                                        sroaChanged = true; continue;
+                                    }
+                                }
                             }
 
                             if (inst.op == OpCode::STORE) {

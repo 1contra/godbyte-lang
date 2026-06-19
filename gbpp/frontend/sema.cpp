@@ -42,7 +42,9 @@ namespace gbpp {
             }
         }
 
-        for (auto fn : m_pending_function_checks) {
+        size_t sigIdx = 0;
+        while (sigIdx < m_pending_function_checks.size()) {
+            FunctionDecl* fn = m_pending_function_checks[sigIdx];
             if (!fn->signatureType) {
                 fn->signatureType = std::make_unique<Type>(Type{ ScalarType::FunctionPtr, fn->name + "_sig", 8 });
                 for (auto& param : fn->params) {
@@ -52,6 +54,7 @@ namespace gbpp {
                 fn->returnTypeResolved = resolveType(fn->returnType);
                 if (!fn->returnTypeResolved) fn->returnTypeResolved = &TypeVoid;
             }
+            sigIdx++;
         }
 
         for (auto& v : prog.globalVars) {
@@ -356,7 +359,9 @@ namespace gbpp {
             auto res = std::make_unique<NullLiteral>(); res->loc = lit->loc; return res;
         }
         if (auto v = dynamic_cast<VarExpr*>(e)) {
-            auto res = std::make_unique<VarExpr>(); res->loc = v->loc; res->name = v->name; return res;
+            auto res = std::make_unique<VarExpr>(); res->loc = v->loc; res->name = v->name;
+            for (auto& arg : v->genericArgs) res->genericArgs.push_back(substituteType(arg, subs));
+            return res;
         }
         if (auto d = dynamic_cast<DerefExpr*>(e)) {
             auto res = std::make_unique<DerefExpr>(); res->loc = d->loc; res->operand = cloneExpr(d->operand.get(), subs); return res;
@@ -383,10 +388,6 @@ namespace gbpp {
         if (auto m = dynamic_cast<MemberExpr*>(e)) {
             auto res = std::make_unique<MemberExpr>(); res->loc = m->loc; res->object = cloneExpr(m->object.get(), subs); res->memberName = m->memberName; return res;
         }
-        if (auto a = dynamic_cast<AllocExpr*>(e)) {
-            auto res = std::make_unique<AllocExpr>(); res->loc = a->loc; res->parsedTargetType = substituteType(a->parsedTargetType, subs);
-            for (auto& arg : a->args) res->args.push_back(cloneExpr(arg.get(), subs)); return res;
-        }
         if (auto a = dynamic_cast<AssignmentExpr*>(e)) {
             auto res = std::make_unique<AssignmentExpr>(); res->loc = a->loc; res->op = a->op; res->target = cloneExpr(a->target.get(), subs); res->value = cloneExpr(a->value.get(), subs); return res;
         }
@@ -405,7 +406,36 @@ namespace gbpp {
         if (auto sf = dynamic_cast<SelfFieldExpr*>(e)) {
             auto res = std::make_unique<SelfFieldExpr>(); res->loc = sf->loc; res->fieldName = sf->fieldName; return res;
         }
+        if (auto hasMeth = dynamic_cast<CompilerHasMethodExpr*>(e)) {
+            auto res = std::make_unique<CompilerHasMethodExpr>(); res->loc = hasMeth->loc;
+            res->parsedTargetType = substituteType(hasMeth->parsedTargetType, subs);
+            res->methodName = hasMeth->methodName; return res;
+        }
+        if (auto bAlloc = dynamic_cast<BuiltinAllocateExpr*>(e)) {
+            auto res = std::make_unique<BuiltinAllocateExpr>(); res->loc = bAlloc->loc;
+            res->sizeExpr = cloneExpr(bAlloc->sizeExpr.get(), subs);
+            res->alignExpr = cloneExpr(bAlloc->alignExpr.get(), subs); return res;
+        }
+        if (auto al = dynamic_cast<AlignofExpr*>(e)) {
+            auto res = std::make_unique<AlignofExpr>(); res->loc = al->loc;
+            res->parsedTargetType = substituteType(al->parsedTargetType, subs); return res;
+        }
+        if (auto exp = dynamic_cast<ExpandExpr*>(e)) {
+            auto res = std::make_unique<ExpandExpr>(); res->loc = exp->loc;
+            res->operand = cloneExpr(exp->operand.get(), subs); return res;
+        }
         return nullptr;
+    }
+
+    bool Sema::evaluateComptimeBool(Expr* expr) {
+        if (auto lit = dynamic_cast<IntLiteral*>(expr)) {
+            return lit->value != "0" && lit->value != "0u8";
+        }
+        if (auto hasMeth = dynamic_cast<CompilerHasMethodExpr*>(expr)) {
+            return hasMeth->resultValue;
+        }
+        error(expr->loc, "Condition is not a compile-time evaluable constant.");
+        return false;
     }
 
     std::unique_ptr<Stmt> Sema::cloneStmt(Stmt* s, const std::unordered_map<std::string, std::string>& subs) {
@@ -439,20 +469,32 @@ namespace gbpp {
         if (auto b = dynamic_cast<BreakStmt*>(s)) {
             auto res = std::make_unique<BreakStmt>(); res->loc = b->loc; return res;
         }
+        if (auto cIf = dynamic_cast<ComptimeIfStmt*>(s)) {
+            auto res = std::make_unique<ComptimeIfStmt>(); res->loc = cIf->loc;
+            res->condition = cloneExpr(cIf->condition.get(), subs);
+            res->thenBranch = cloneStmt(cIf->thenBranch.get(), subs);
+            res->elseBranch = cloneStmt(cIf->elseBranch.get(), subs); return res;
+        }
         return nullptr;
     }
 
     FunctionDecl* Sema::instantiateFunction(FunctionDecl* tmpl, const std::vector<ParsedType>& args, const std::string& mangledName) {
         std::unordered_map<std::string, std::string> substitutions;
-        for (size_t i = 0; i < args.size(); ++i) {
-            Type* argType = resolveType(args[i]);
-            substitutions[tmpl->genericParams[i].name] = argType ? argType->name : args[i].baseName;
+        for (size_t i = 0; i < tmpl->genericParams.size(); ++i) {
+            if (i < args.size()) {
+                Type* argType = resolveType(args[i]);
+                substitutions[tmpl->genericParams[i].name] = argType ? argType->name : args[i].baseName;
+            }
+            else if (tmpl->genericParams[i].isVariadic) {
+                substitutions[tmpl->genericParams[i].name] = "void";
+            }
         }
 
         auto inst = std::make_unique<FunctionDecl>();
         inst->loc = tmpl->loc;
         inst->name = mangledName;
         inst->attributes = tmpl->attributes;
+        inst->genericParams = tmpl->genericParams;
 
         for (const auto& p : tmpl->params) {
             inst->params.push_back({ p.name, substituteType(p.parsedType, substitutions), nullptr });
@@ -570,8 +612,11 @@ namespace gbpp {
         for (auto& stmt : block.statements) checkStmt(*stmt);
 
         for (const auto& owner : m_currentScope->ownedVars) {
-            if (m_currentScope->freedVars.find(owner) == m_currentScope->freedVars.end()) {
-                error(block.loc, "Memory leak detected. Variable '" + owner + "' is an 'owner' type but was never freed. Fix: Call 'free(" + owner + ");' or annotate with '[[@nofree]]'.");
+            bool freed = m_currentScope->freedVars.find(owner) != m_currentScope->freedVars.end();
+            bool moved = m_currentScope->movedVars.find(owner) != m_currentScope->movedVars.end();
+            if (!freed && !moved) {
+                error(block.loc, "Memory leak detected. Variable '" + owner +
+                    "' is an 'owner' type but was never freed or moved.");
             }
         }
         exitScope();
@@ -587,13 +632,7 @@ namespace gbpp {
 
             if (d->initializer) {
                 checkExpr(*d->initializer);
-
-                bool isAlloc = dynamic_cast<AllocExpr*>(d->initializer.get()) != nullptr;
-
-                if (d->resolvedType && d->resolvedType->isPointer() && isAlloc) {
-
-                }
-                else if (d->resolvedType && d->initializer->type && *d->resolvedType != *d->initializer->type) {
+                if (d->resolvedType && d->initializer->type && *d->resolvedType != *d->initializer->type) {
                     error(d->loc, "Type mismatch in declaration of '" + d->name +
                         "'. Expected " + d->resolvedType->toString() + ", got " + d->initializer->type->toString());
                 }
@@ -614,12 +653,28 @@ namespace gbpp {
 
                 if (!r->value->type) r->value->type = &TypeVoid;
 
+                if (m_currentFunctionReturnType && m_currentFunctionReturnType->name.starts_with("owner ")) {
+                    Expr* retVal = r->value.get();
+
+                    while (auto castExpr = dynamic_cast<CastExpr*>(retVal)) {
+                        retVal = castExpr->operand.get();
+                    }
+
+                    if (auto var = dynamic_cast<VarExpr*>(retVal)) {
+                        for (Scope* s = m_currentScope; s; s = s->parent) {
+                            if (s->variables.count(var->name)) {
+                                s->movedVars.insert(var->name);
+                                break;
+                            }
+                        }
+                    }
+                }
+
                 if (m_currentFunctionReturnType->scalar == ScalarType::Void) {
                     error(r->loc, "Function returning 'void' cannot return a value.");
                 }
                 else {
-                    bool isAllocPtr = m_currentFunctionReturnType->isPointer() && dynamic_cast<AllocExpr*>(r->value.get()) != nullptr;
-                    if (!isAllocPtr && *r->value->type != *m_currentFunctionReturnType) {
+                    if (*r->value->type != *m_currentFunctionReturnType) {
                         error(r->loc, "Return type mismatch. Expected " +
                             m_currentFunctionReturnType->toString() + ", got " + r->value->type->toString());
                     }
@@ -666,6 +721,18 @@ namespace gbpp {
         }
         else if (auto b = dynamic_cast<BlockStmt*>(&stmt)) {
             checkBlock(*b);
+        }
+        else if (auto cIf = dynamic_cast<ComptimeIfStmt*>(&stmt)) {
+            checkExpr(*cIf->condition);
+            bool condValue = evaluateComptimeBool(cIf->condition.get());
+            if (condValue) {
+                if (cIf->thenBranch) checkStmt(*cIf->thenBranch);
+                cIf->elseBranch.reset();
+            }
+            else {
+                if (cIf->elseBranch) checkStmt(*cIf->elseBranch);
+                cIf->thenBranch.reset();
+            }
         }
     }
 
@@ -771,9 +838,18 @@ namespace gbpp {
                 addr->type = &TypeVoid;
                 return;
             }
+
             ParsedType pt;
-            pt.baseName = addr->operand->type->name;
-            pt.modifiers.push_back(TypeModifier::Ref);
+            std::string baseTypeStr = addr->operand->type->name;
+
+            if (baseTypeStr.starts_with("owner ")) {
+                pt.baseName = baseTypeStr.substr(6);
+                pt.modifiers.push_back(TypeModifier::Ref);
+            }
+            else {
+                pt.baseName = baseTypeStr;
+                pt.modifiers.push_back(TypeModifier::Ref);
+            }
 
             if (addr->operand->type->isVolatile) pt.modifiers.push_back(TypeModifier::Volatile);
             if (addr->operand->type->isConst) pt.modifiers.push_back(TypeModifier::Const);
@@ -781,7 +857,29 @@ namespace gbpp {
             addr->type = resolveType(pt);
         }
         else if (auto var = dynamic_cast<VarExpr*>(&expr)) {
+            if (!var->genericArgs.empty()) {
+                std::string mangledName = var->name;
+                for (const auto& arg : var->genericArgs) {
+                    Type* argType = resolveType(arg);
+                    mangledName += "$" + (argType ? argType->name : arg.baseName);
+                }
+
+                if (m_generic_functions.count(var->name)) {
+                    if (!m_functions.count(mangledName)) {
+                        instantiateFunction(m_generic_functions[var->name], var->genericArgs, mangledName);
+                    }
+                    var->name = mangledName;
+                }
+            }
+
             var->type = lookupVariable(var->name);
+
+            for (Scope* s = m_currentScope; s; s = s->parent) {
+                if (s->movedVars.count(var->name)) {
+                    error(var->loc, "Use of moved owner variable: '" + var->name + "'");
+                    break;
+                }
+            }
 
             if (!var->type) {
                 FunctionDecl* targetFn = nullptr;
@@ -833,38 +931,6 @@ namespace gbpp {
             }
             arr->type = arr->array->type->base;
         }
-        else if (auto alloc = dynamic_cast<AllocExpr*>(&expr)) {
-            alloc->resolvedTargetType = resolveType(alloc->parsedTargetType);
-
-            ParsedType pt = alloc->parsedTargetType;
-            pt.modifiers.push_back(TypeModifier::Owner);
-            alloc->type = resolveType(pt);
-
-            if (!alloc->type || !alloc->resolvedTargetType) {
-                error(alloc->loc, "Unknown type for allocation: " + alloc->parsedTargetType.toString());
-                alloc->type = &TypeVoid;
-                return;
-            }
-
-            std::string methodName = alloc->parsedTargetType.baseName + "::alloc";
-            if (m_functions.count(methodName)) {
-                alloc->initMethodName = methodName;
-                FunctionDecl* fn = m_functions[methodName];
-
-                if (alloc->args.size() + 1 != fn->params.size()) {
-                    error(alloc->loc, "Argument count mismatch for " + methodName);
-                }
-                for (size_t i = 0; i < alloc->args.size(); ++i) {
-                    checkExpr(*alloc->args[i]);
-                }
-            }
-            else {
-                for (auto& arg : alloc->args) checkExpr(*arg);
-                if (!alloc->args.empty()) {
-                    error(alloc->loc, "No alloc method found for " + alloc->parsedTargetType.baseName + " taking arguments.");
-                }
-            }
-        }
         else if (auto mem = dynamic_cast<MemberExpr*>(&expr)) {
             checkExpr(*mem->object);
             if (!mem->object->type) mem->object->type = &TypeVoid;
@@ -914,6 +980,19 @@ namespace gbpp {
 
             assign->type = assign->target->type;
 
+            if (assign->op == TokenType::Equal) {
+                if (assign->target->type && assign->target->type->name.starts_with("owner ")) {
+                    if (auto rhsVar = dynamic_cast<VarExpr*>(assign->value.get())) {
+                        for (Scope* s = m_currentScope; s; s = s->parent) {
+                            if (s->variables.count(rhsVar->name)) {
+                                s->movedVars.insert(rhsVar->name);
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+
             if (assign->op != TokenType::Equal && dynamic_cast<IntLiteral*>(assign->value.get())) {
                 Type* t = assign->target->type;
                 if (t && (t->isInteger() || t->isFloatingPoint() || t->isPointer())) {
@@ -923,13 +1002,12 @@ namespace gbpp {
                     error(assign->loc, "Cannot perform arithmetic assignment on non-numeric type: " + (t ? t->toString() : "unknown"));
                 }
 
-                bool isAlloc = dynamic_cast<AllocExpr*>(assign->value.get()) != nullptr;
 
-                if (assign->target->type && assign->target->type->isPointer() && isAlloc) {
+                if (assign->target->type && assign->target->type->isPointer()) {
 
                 }
 
-                else if (assign->target->type && assign->value->type && *assign->target->type != *assign->value->type) {
+                if (assign->target->type && assign->value->type && *assign->target->type != *assign->value->type) {
                     error(assign->loc, "Type mismatch in assignment. Cannot assign " +
                         assign->value->type->toString() + " to " + assign->target->type->toString());
                 }
@@ -939,6 +1017,22 @@ namespace gbpp {
             checkExpr(*bin->left);
             checkExpr(*bin->right);
 
+            Type* leftType = bin->left->type ? bin->left->type : &TypeVoid;
+            Type* rightType = bin->right->type ? bin->right->type : &TypeVoid;
+
+            auto isNumeric = [](Type* t) {
+                if (!t) return false;
+                return t->isInteger() || t->isFloatingPoint();
+            };
+
+            auto isPrimitive = [](Type* t) {
+                if (!t) return false;
+                return t->isInteger() || t->isFloatingPoint() || t->isPointer() || t->name == "null" || t->scalar == ScalarType::FunctionPtr;
+            };
+
+            bool leftNull = (leftType->name == "null");
+            bool rightNull = (rightType->name == "null");
+
             if (bin->op == TokenType::EqualEqual ||
                 bin->op == TokenType::NotEqual ||
                 bin->op == TokenType::LT ||
@@ -946,10 +1040,72 @@ namespace gbpp {
                 bin->op == TokenType::LE ||
                 bin->op == TokenType::GE) {
 
+                if (bin->op == TokenType::EqualEqual || bin->op == TokenType::NotEqual) {
+                    if ((leftNull && isNumeric(rightType)) || (isNumeric(leftType) && rightNull)) {
+                        error(bin->loc, "Type mismatch: 'null' is its own distinct type and cannot be compared to a numeric value.");
+                    }
+                    else if ((leftNull && leftType->isPointer()) || (rightNull && rightType->isPointer())) {
+                        bin->type = &TypeBool;
+                    }
+                    else if ((leftType->isPointer() && isNumeric(rightType)) || (isNumeric(leftType) && rightType->isPointer())) {
+                        bin->type = &TypeBool;
+                    }
+                    else if (*leftType != *rightType) {
+                        if (!(isPrimitive(leftType) && isPrimitive(rightType))) {
+                            error(bin->loc, "Type mismatch: cannot compare '" +
+                                leftType->toString() + "' and '" + rightType->toString() + "'");
+                        }
+                    }
+                }
+                else {
+                    if (leftNull || rightNull) {
+                        error(bin->loc, "Type mismatch: 'null' cannot be relationally compared.");
+                    }
+                    else if (!isNumeric(leftType) && !leftType->isPointer()) {
+                        error(bin->loc, "Relational operators require numeric or pointer types, got '" + leftType->toString() + "'");
+                    }
+                }
+                bin->type = &TypeBool;
+            }
+            else if (bin->op == TokenType::AmpAmp || bin->op == TokenType::PipePipe) {
+                if (*leftType != *rightType) {
+                    if (!(isPrimitive(leftType) && isPrimitive(rightType))) {
+                        error(bin->loc, "Type mismatch in logical expression.");
+                    }
+                }
                 bin->type = &TypeBool;
             }
             else {
-                bin->type = bin->left->type;
+                if (leftType->isPointer() && rightType->isInteger() &&
+                    (bin->op == TokenType::Plus || bin->op == TokenType::Minus)) {
+                    bin->type = leftType;
+                }
+                else if (*leftType != *rightType) {
+                    if (!(isNumeric(leftType) && isNumeric(rightType))) {
+                        error(bin->loc, "Type mismatch in binary expression. Cannot operate on '" +
+                            leftType->toString() + "' and '" + rightType->toString() + "'");
+                    }
+                    bin->type = leftType;
+                }
+                else {
+                    bin->type = leftType;
+                }
+
+                if (bin->op == TokenType::Pipe || bin->op == TokenType::Ampersand ||
+                    bin->op == TokenType::Caret || bin->op == TokenType::ShiftLeft ||
+                    bin->op == TokenType::ShiftRight || bin->op == TokenType::Percent) {
+
+                    if (!leftType->isInteger() || !rightType->isInteger()) {
+                        error(bin->loc, "Bitwise and modulo operators require integer types.");
+                    }
+                }
+                else if (bin->op == TokenType::Plus || bin->op == TokenType::Minus ||
+                    bin->op == TokenType::Star || bin->op == TokenType::Slash) {
+
+                    if (!isNumeric(leftType) && !(leftType->isPointer() && rightType->isInteger() && (bin->op == TokenType::Plus || bin->op == TokenType::Minus))) {
+                        error(bin->loc, "Arithmetic operators require numeric types.");
+                    }
+                }
             }
         }
         else if (auto call = dynamic_cast<CallExpr*>(&expr)) {
@@ -994,6 +1150,21 @@ namespace gbpp {
             }
 
             if (auto var = dynamic_cast<VarExpr*>(call->callee.get())) {
+                if (!var->genericArgs.empty()) {
+                    std::string mangledName = var->name;
+                    for (const auto& arg : var->genericArgs) {
+                        Type* argType = resolveType(arg);
+                        mangledName += "$" + (argType ? argType->name : arg.baseName);
+                    }
+
+                    if (m_generic_functions.count(var->name)) {
+                        if (!m_functions.count(mangledName)) {
+                            instantiateFunction(m_generic_functions[var->name], var->genericArgs, mangledName);
+                        }
+                        var->name = mangledName;
+                    }
+                }
+
                 bool isFunctionCall = false;
 
                 FunctionDecl* targetFn = nullptr;
@@ -1002,10 +1173,38 @@ namespace gbpp {
                 }
 
                 if (targetFn) {
-                    if (call->args.size() != targetFn->params.size()) error(call->loc, "Arg count mismatch");
-                    for (auto& arg : call->args) {
+                    bool isVariadic = false;
+                    for (const auto& gp : targetFn->genericParams) {
+                        if (gp.isVariadic) isVariadic = true;
+                    }
+
+                    bool hasExpand = false;
+                    for (const auto& arg : call->args) {
+                        if (dynamic_cast<ExpandExpr*>(arg.get())) hasExpand = true;
+                    }
+
+                    if (!isVariadic && !hasExpand && call->args.size() != targetFn->params.size()) {
+                        error(call->loc, "Arg count mismatch for function '" + targetFn->name + "'");
+                    }
+
+                    for (size_t i = 0; i < call->args.size(); ++i) {
+                        auto& arg = call->args[i];
                         checkExpr(*arg);
                         if (!arg->type) arg->type = &TypeVoid;
+
+                        if (!hasExpand && i < targetFn->params.size()) {
+                            Type* expectedParam = targetFn->params[i].resolvedType;
+                            if (expectedParam && expectedParam->name.starts_with("owner ")) {
+                                if (auto argVar = dynamic_cast<VarExpr*>(arg.get())) {
+                                    for (Scope* s = m_currentScope; s; s = s->parent) {
+                                        if (s->variables.count(argVar->name)) {
+                                            s->movedVars.insert(argVar->name);
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
 
                     call->type = targetFn->returnTypeResolved ? targetFn->returnTypeResolved : &TypeVoid;
@@ -1060,6 +1259,20 @@ namespace gbpp {
 
             for (size_t i = 0; i < call->args.size(); ++i) {
                 checkExpr(*call->args[i]);
+
+                if (calleeType && i < calleeType->paramTypes.size()) {
+                    Type* expectedParam = calleeType->paramTypes[i];
+                    if (expectedParam && expectedParam->name.starts_with("owner ")) {
+                        if (auto argVar = dynamic_cast<VarExpr*>(call->args[i].get())) {
+                            for (Scope* s = m_currentScope; s; s = s->parent) {
+                                if (s->variables.count(argVar->name)) {
+                                    s->movedVars.insert(argVar->name);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
             }
             call->type = calleeType->returnType;
         }
@@ -1079,6 +1292,34 @@ namespace gbpp {
                 }
             }
             expr.type = cast->targetType;
+        }
+        else if (auto bAlloc = dynamic_cast<BuiltinAllocateExpr*>(&expr)) {
+            checkExpr(*bAlloc->sizeExpr);
+            checkExpr(*bAlloc->alignExpr);
+            ParsedType pt; pt.baseName = "u8"; pt.modifiers.push_back(TypeModifier::Owner);
+            bAlloc->type = resolveType(pt);
+        }
+        else if (auto hasMeth = dynamic_cast<CompilerHasMethodExpr*>(&expr)) {
+            Type* targetT = resolveType(hasMeth->parsedTargetType);
+            bool found = false;
+            if (targetT) {
+                std::string typeName = targetT->isPointer() ? targetT->base->name : targetT->name;
+                std::string expectedMethod = typeName + "::" + hasMeth->methodName;
+                if (m_functions.count(expectedMethod) || m_generic_functions.count(expectedMethod)) {
+                    found = true;
+                }
+            }
+            hasMeth->resultValue = found;
+            hasMeth->type = &TypeBool;
+        }
+        else if (auto al = dynamic_cast<AlignofExpr*>(&expr)) {
+            al->resolvedTargetType = resolveType(al->parsedTargetType);
+            if (!al->resolvedTargetType) error(al->loc, "Unknown type in alignof");
+            al->type = &TypeU64;
+        }
+        else if (auto exp = dynamic_cast<ExpandExpr*>(&expr)) {
+            checkExpr(*exp->operand);
+            exp->type = exp->operand->type;
         }
     }
 

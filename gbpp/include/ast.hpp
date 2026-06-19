@@ -85,7 +85,22 @@ namespace gbpp {
     struct FloatLiteral : Expr { std::string value; };
     struct StringLiteral : Expr { std::string value; };
     struct NullLiteral : Expr {};
-    struct VarExpr : Expr { std::string name; };
+    struct VarExpr : Expr {
+        std::string name;
+        std::vector<ParsedType> genericArgs;
+    };
+
+    struct CompilerHasMethodExpr : Expr {
+        ParsedType parsedTargetType;
+        Type* resolvedTargetType = nullptr;
+        std::string methodName;
+        bool resultValue = false;
+    };
+
+    struct BuiltinAllocateExpr : Expr {
+        std::unique_ptr<Expr> sizeExpr;
+        std::unique_ptr<Expr> alignExpr;
+    };
 
     struct DerefExpr : Expr {
         std::unique_ptr<Expr> operand;
@@ -133,13 +148,6 @@ namespace gbpp {
         std::string memberName;
     };
 
-    struct AllocExpr : Expr {
-        ParsedType parsedTargetType;
-        Type* resolvedTargetType = nullptr;
-        std::vector<std::unique_ptr<Expr>> args;
-        std::string initMethodName;
-    };
-
     struct AssignmentExpr : Expr {
         std::unique_ptr<Expr> target;
         TokenType op = TokenType::Equal;
@@ -153,6 +161,12 @@ namespace gbpp {
     };
 
     struct Stmt : ASTNode {};
+
+    struct ComptimeIfStmt : Stmt {
+        std::unique_ptr<Expr> condition;
+        std::unique_ptr<Stmt> thenBranch;
+        std::unique_ptr<Stmt> elseBranch;
+    };
 
     struct VarDecl : Stmt {
         std::string name;
@@ -190,7 +204,10 @@ namespace gbpp {
         std::unique_ptr<Stmt> body;
     };
 
-    struct GenericParam { std::string name; };
+    struct GenericParam {
+        std::string name;
+        bool isVariadic = false;
+    };
 
     struct FunctionDecl : ASTNode {
         std::vector<GenericParam> genericParams;
@@ -245,6 +262,19 @@ namespace gbpp {
 
     struct SelfFieldExpr : Expr {
         std::string fieldName;
+    };
+
+    struct AlignofExpr : Expr {
+        ParsedType parsedTargetType;
+        Type* resolvedTargetType = nullptr;
+    };
+
+    struct ExpandExpr : Expr {
+        std::unique_ptr<Expr> operand;
+    };
+
+    struct PackExpr : Expr {
+        std::vector<std::unique_ptr<Expr>> elements;
     };
 
     struct Program : ASTNode {
