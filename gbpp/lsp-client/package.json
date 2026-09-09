@@ -2,6 +2,7 @@
   "name": "godbytepp",
   "displayName": "GodByte++ Support",
   "version": "0.1.0",
+  "type": "module",
   "engines": {
     "vscode": "^1.75.0"
   },
@@ -9,7 +10,11 @@
     "onLanguage:gbpp",
     "onLanguage:gbpp-ir"
   ],
-  "main": "./client.js",
+  "main": "./out/client.js",
+  "scripts": {
+    "vscode:prepublish": "pnpm build",
+    "build": "esbuild client.js --bundle --outfile=out/client.js --external:vscode --format=cjs --platform=node"
+  },
   "contributes": {
     "languages": [
       {
@@ -23,8 +28,8 @@
         ],
         "configuration": "./language-configuration.json",
         "icon": {
-            "light": "images/gbpp-icon.png",
-            "dark": "images/gbpp-icon.png"
+          "light": "images/gbpp-icon.png",
+          "dark": "images/gbpp-icon.png"
         }
       },
       {
@@ -38,8 +43,8 @@
         ],
         "configuration": "./language-configuration.json",
         "icon": {
-            "light": "images/gbpp-icon.png",
-            "dark": "images/gbpp-icon.png"
+          "light": "images/gbpp-icon.png",
+          "dark": "images/gbpp-icon.png"
         }
       }
     ],
@@ -51,9 +56,7 @@
       }
     ],
     "configurationDefaults": {
-      "editor.semanticTokenColorCustomizations": {
-        
-      }
+      "editor.semanticTokenColorCustomizations": {}
     }
   },
   "dependencies": {
@@ -61,6 +64,7 @@
     "vscode-languageclient": "^9.0.1"
   },
   "devDependencies": {
+    "esbuild": "^0.28.1",
     "vscode": "^1.1.37"
   }
 }

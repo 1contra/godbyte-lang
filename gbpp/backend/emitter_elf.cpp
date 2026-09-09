@@ -51,11 +51,19 @@ namespace gbpp {
         void emitGlobal(const std::string& name) override { getOrAddSym(name, 1, 0x10); }
         void emitExtern(const std::string& name) override { getOrAddSym(name, 0, 0x10); }
         void emitDataString(const std::string& l, const std::string& s) override {
-            getOrAddSym(l, 4, 0x00, dataBuf.size());
+            getOrAddSym(l, 5, 0x00, dataBuf.size());
             for (char c : s) dataBuf.emit8(c); dataBuf.emit8(0);
         }
         void emitLabel(const std::string& l) override { labels[l] = curBuf->size(); }
         void emitInstruction(const MachineInstr& inst) override { X86Encoder::encode(inst, *curBuf); }
+
+        void emitDataInteger(const std::string& label, uint64_t val, int size) override {
+            getOrAddSym(label, 5, 0x00, dataBuf.size());
+            if (size == 1) dataBuf.emit8((uint8_t)val);
+            else if (size == 2) dataBuf.emit16((uint16_t)val);
+            else if (size == 4) dataBuf.emit32((uint32_t)val);
+            else dataBuf.emit64(val);
+        }
 
         void finalize(std::ostream& out) override {
             for (auto& [l, off] : labels) if (symLookup.count(l)) symbols[symLookup[l]].st_value = off;

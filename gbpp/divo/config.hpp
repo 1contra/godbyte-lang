@@ -19,7 +19,9 @@ namespace divo {
 
     static std::map<std::string, LibInfo> LibraryRegistry = {
         {"vulkan", {"vulkan", "/LIBPATH:\"" + sdk + "\\Lib\" vulkan-1.lib", "-lvulkan"}},
-        {"io", {"io", "/defaultlib:msvcrt /defaultlib:ucrt", "-lc"}},
+        {"io", {"io", "/defaultlib:msvcrt /defaultlib:ucrt /defaultlib:legacy_stdio_definitions", "-lc"}},
+        {"sys", {"sys", "/defaultlib:msvcrt /defaultlib:ucrt /defaultlib:legacy_stdio_definitions ws2_32.lib", "-lc"}},
+        {"net", {"net", "ws2_32.lib", "-lc"}},
         {"math", {"math", "", "-lm"}}
     };
 

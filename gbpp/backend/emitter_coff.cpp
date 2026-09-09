@@ -72,6 +72,14 @@ namespace gbpp {
         void emitLabel(const std::string& l) override { labels[l] = curBuf->size(); }
         void emitInstruction(const MachineInstr& inst) override { X86Encoder::encode(inst, *curBuf); }
 
+        void emitDataInteger(const std::string& label, uint64_t val, int size) override {
+            getOrAddSym(label, 2, 3, dataBuf.size());
+            if (size == 1) dataBuf.emit8((uint8_t)val);
+            else if (size == 2) dataBuf.emit16((uint16_t)val);
+            else if (size == 4) dataBuf.emit32((uint32_t)val);
+            else dataBuf.emit64(val);
+        }
+
         void finalize(std::ostream& out) override {
             for (auto& [l, off] : labels) if (symLookup.count(l)) symbols[symLookup[l]].value = off;
 
@@ -79,6 +87,9 @@ namespace gbpp {
                 if (labels.count(fix.symbol)) {
                     int32_t rel = labels[fix.symbol] - (fix.offset + 4);
                     textBuf.patch32(fix.offset, rel);
+                }
+                else if (symLookup.count(fix.symbol)) {
+                    textRelocs.push_back({ (uint32_t)fix.offset, symLookup[fix.symbol], 0x0004 });
                 }
                 else {
                     textRelocs.push_back({ (uint32_t)fix.offset, symLookup[fix.symbol], 0x0004 });

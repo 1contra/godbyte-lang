@@ -14,14 +14,18 @@ namespace gbpp {
         LOAD_LOCAL, STORE_LOCAL,
         LOAD, STORE,
         ALLOC, AND,
-        ADD, SUB, MUL, DIV,
+        ADD, SUB, MUL, DIV, UDIV, MOD, UMOD,
         FADD, FSUB, FMUL, FDIV,
         RET, XOR,
         LABEL, JMP, JMP_FALSE, CMP_EQ, CMP_LT,
-        CAST, ZEXT, TRUNC, CALL, LOAD_STR,
+        CAST, ZEXT, SEXT, TRUNC, CALL, LOAD_STR,
         CMP_NE, CMP_GT, CMP_GE, CMP_LE,
         INLINE_ASM,
-        OR, SHL, SHR
+        OR, SHL, SHR,
+        VLOAD256, VSTORE256, VADD256, VSUB256, VMUL256,
+        VAND256, VOR256, VXOR256, VPBROADCASTQ,
+        SELECT,
+        TRAP, UNREACHABLE, BSWAP
     };
 
     struct ExprVal {
@@ -95,6 +99,12 @@ namespace gbpp {
                     return destStr() + "mul " + typeStr + " v" + to_string(src1) + ", " + op2();
                 case OpCode::DIV:
                     return destStr() + "div " + typeStr + " v" + to_string(src1) + ", v" + to_string(src2);
+                case OpCode::UDIV:
+                    return destStr() + "udiv " + typeStr + " v" + to_string(src1) + ", v" + to_string(src2);
+                case OpCode::MOD:
+                    return destStr() + "mod " + typeStr + " v" + to_string(src1) + ", v" + to_string(src2);
+                case OpCode::UMOD:
+                    return destStr() + "umod " + typeStr + " v" + to_string(src1) + ", v" + to_string(src2);
                 case OpCode::RET:
                     if (src1 != -1) return "ret " + typeStr + " v" + to_string(src1);
                     return "ret void";
@@ -108,6 +118,8 @@ namespace gbpp {
                     return destStr() + "cast v" + to_string(src1) + " to " + typeStr;
                 case OpCode::ZEXT:
                     return destStr() + "zext v" + to_string(src1) + " to " + typeStr;
+                case OpCode::SEXT:
+                    return destStr() + "sext v" + to_string(src1) + " to " + typeStr;
                 case OpCode::TRUNC:
                     return destStr() + "trunc v" + to_string(src1) + " to " + typeStr;
                 case OpCode::CALL:
@@ -164,6 +176,32 @@ namespace gbpp {
                     return destStr() + "fmul " + typeStr + " v" + to_string(src1) + ", " + op2();
                 case OpCode::FDIV:
                     return destStr() + "fdiv " + typeStr + " v" + to_string(src1) + ", v" + to_string(src2);
+                case OpCode::SELECT:
+                    return destStr() + "select cond:v" + to_string(src1) + " ? v" + to_string(src2) + " : v" + to_string(args[0]);
+                case OpCode::VLOAD256:
+                    return destStr() + "vload256 from [v" + to_string(src1) + "]";
+                case OpCode::VSTORE256:
+                    return "vstore256 v" + to_string(src2) + " into [v" + to_string(src1) + "]";
+                case OpCode::VPBROADCASTQ:
+                    return destStr() + "vpbroadcastq v" + to_string(src1);
+                case OpCode::VADD256:
+                    return destStr() + "vadd256 v" + to_string(src1) + ", v" + to_string(src2);
+                case OpCode::VSUB256:
+                    return destStr() + "vsub256 v" + to_string(src1) + ", v" + to_string(src2);
+                case OpCode::VMUL256:
+                    return destStr() + "vmul256 v" + to_string(src1) + ", v" + to_string(src2);
+                case OpCode::VAND256:
+                    return destStr() + "vand256 v" + to_string(src1) + ", v" + to_string(src2);
+                case OpCode::VOR256:
+                    return destStr() + "vor256 v" + to_string(src1) + ", v" + to_string(src2);
+                case OpCode::VXOR256:
+                    return destStr() + "vxor256 v" + to_string(src1) + ", v" + to_string(src2);
+                case OpCode::TRAP:
+                    return "; trap (int3)";
+                case OpCode::UNREACHABLE:
+                    return "; unreachable (ud2)";
+                case OpCode::BSWAP:
+                    return destStr() + "bswap " + typeStr + " v" + std::to_string(src1);
                 default:
                     return "; Unknown Op " + to_string((int)op);
             }
@@ -215,6 +253,12 @@ namespace gbpp {
     struct IRModule {
         std::vector<IRFunction> functions;
         std::vector<std::string> readOnlyStrings;
+        struct IRGlobal {
+            std::string name;
+            uint64_t initVal;
+            int size;
+        };
+        std::vector<IRGlobal> globals;
 
         IRModule() = default;
         IRModule(const IRModule&) = delete;

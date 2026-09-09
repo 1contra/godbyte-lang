@@ -394,10 +394,8 @@ public:
             return pos != std::string::npos ? fullName.substr(pos + 2) : fullName;
         };
 
-        auto hasExport = [](const std::set<std::string>& attrs) {
-            for (const auto& a : attrs) {
-                if (a == "export" || a == "@export") return true;
-            }
+        auto hasExport = [](std::vector<gbpp::Attribute>& attrs) {
+            if (hasAttribute(attrs, gbpp::AttrKind::Export)) return true;
             return false;
         };
 

@@ -10,19 +10,20 @@ namespace gbpp {
         EndOfFile,
         Identifier, IntLiteral, FloatLiteral, StringLiteral, CharLiteral,
         Namespace,
-        Comptime, BuiltinAllocate, Compiler,
+        Comptime, BuiltinAllocate, BuiltinMemfill, BuiltinMemcpy, BuiltinTrap, BuiltinBswap, BuiltinUnreachable, Compiler, Lock,
         Variadic, Expand, Alignof,
         Asm, AsmBlock,
 
         HashImport, Lib,
 
         Fn, Return, Struct, Enum, Alias,
+        Operator,
         Sizeof,
         Owner, Ref,
         PipePipe,
         AmpAmp,
         Null, True, False,
-        If, Else, While, Break, For,
+        If, Else, While, Break, Continue, For,
 
         U8, U16, U32, U64,
         I8, I16, I32, I64,

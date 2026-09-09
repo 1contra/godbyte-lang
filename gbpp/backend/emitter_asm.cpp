@@ -6,6 +6,9 @@ namespace gbpp {
         std::stringstream ss;
 
         std::string getRegName(int id, int bytes) {
+            if (bytes == 32) return "ymm" + std::to_string(id);
+            if (bytes == 16) return "xmm" + std::to_string(id);
+            // 😼
             static const char* r64[] = { "rax","rcx","rdx","rbx","rsp","rbp","rsi","rdi","r8","r9","r10","r11","r12","r13","r14","r15" };
             static const char* r32[] = { "eax","ecx","edx","ebx","esp","ebp","esi","edi","r8d","r9d","r10d","r11d","r12d","r13d","r14d","r15d" };
             static const char* r16[] = { "ax","cx","dx","bx","sp","bp","si","di","r8w","r9w","r10w","r11w","r12w","r13w","r14w","r15w" };
@@ -18,6 +21,8 @@ namespace gbpp {
         }
 
         std::string getSizeName(int bytes) {
+            if (bytes == 32) return "ymmword";
+            if (bytes == 16) return "xmmword";
             if (bytes == 8) return "qword";
             if (bytes == 4) return "dword";
             if (bytes == 2) return "word";
@@ -37,34 +42,67 @@ namespace gbpp {
             return "err";
         }
 
+        void emitDataInteger(const std::string& label, uint64_t val, int size) override {
+            ss << "    " << label << " ";
+            if (size == 1) ss << "db";
+            else if (size == 2) ss << "dw";
+            else if (size == 4) ss << "dd";
+            else ss << "dq";
+            ss << " " << val << "\n";
+        }
+
         std::string getMnemonic(MInstOpcode op) {
             switch (op) {
-            case MInstOpcode::X86_MOVrr: case MInstOpcode::X86_MOVri: case MInstOpcode::X86_MOVrm: case MInstOpcode::X86_MOVmr: case MInstOpcode::X86_MOVmi: return "mov";
-            case MInstOpcode::X86_MOVZX: return "movzx";
-            case MInstOpcode::X86_ADDrr: case MInstOpcode::X86_ADDri: case MInstOpcode::X86_ADDrm: case MInstOpcode::X86_ADDmr: return "add";
-            case MInstOpcode::X86_SUBrr: case MInstOpcode::X86_SUBri: case MInstOpcode::X86_SUBrm: case MInstOpcode::X86_SUBmr: return "sub";
-            case MInstOpcode::X86_IMULrr: case MInstOpcode::X86_IMULrri: return "imul";
-            case MInstOpcode::X86_IDIVr: return "idiv";
-            case MInstOpcode::X86_CQO: return "cqo";
-            case MInstOpcode::X86_ANDrr: case MInstOpcode::X86_ANDri: case MInstOpcode::X86_ANDrm: case MInstOpcode::X86_ANDmr: return "and";
-            case MInstOpcode::X86_ORrr: case MInstOpcode::X86_ORri: case MInstOpcode::X86_ORrm: case MInstOpcode::X86_ORmr: return "or";
-            case MInstOpcode::X86_XORrr: case MInstOpcode::X86_XORri: case MInstOpcode::X86_XORrm: case MInstOpcode::X86_XORmr: return "xor";
-            case MInstOpcode::X86_SHLr: case MInstOpcode::X86_SHLcl: return "shl";
-            case MInstOpcode::X86_SHRr: case MInstOpcode::X86_SHRcl: return "shr";
-            case MInstOpcode::X86_TESTrr: return "test";
-            case MInstOpcode::X86_CMPrr: case MInstOpcode::X86_CMPri: case MInstOpcode::X86_CMPrm: return "cmp";
-            case MInstOpcode::X86_LEAr: case MInstOpcode::X86_LEAm: return "lea";
-            case MInstOpcode::X86_CALLpcrel: case MInstOpcode::X86_CALLr: return "call";
-            case MInstOpcode::X86_JMP: return "jmp";
-            case MInstOpcode::X86_JE: return "je"; case MInstOpcode::X86_JNE: return "jne";
-            case MInstOpcode::X86_JL: return "jl"; case MInstOpcode::X86_JLE: return "jle";
-            case MInstOpcode::X86_JG: return "jg"; case MInstOpcode::X86_JGE: return "jge";
-            case MInstOpcode::X86_SETL: return "setl"; case MInstOpcode::X86_SETG: return "setg";
-            case MInstOpcode::X86_SETE: return "sete"; case MInstOpcode::X86_SETNE: return "setne";
-            case MInstOpcode::X86_SETGE: return "setge"; case MInstOpcode::X86_SETLE: return "setle";
-            case MInstOpcode::X86_PUSHr: return "push"; case MInstOpcode::X86_POPr: return "pop";
-            case MInstOpcode::X86_LEAVE: return "leave"; case MInstOpcode::X86_RET: return "ret";
-            default: return "; unknown_op";
+                case MInstOpcode::X86_MOVrr: case MInstOpcode::X86_MOVri: case MInstOpcode::X86_MOVrm: case MInstOpcode::X86_MOVmr: case MInstOpcode::X86_MOVmi: return "mov";
+                case MInstOpcode::X86_MOVZX: return "movzx";
+                case MInstOpcode::X86_MOVSX: return "movsx";
+                case MInstOpcode::X86_MOVSXD: return "movsxd";
+                case MInstOpcode::X86_ADDrr: case MInstOpcode::X86_ADDri: case MInstOpcode::X86_ADDrm: case MInstOpcode::X86_ADDmr: return "add";
+                case MInstOpcode::X86_SUBrr: case MInstOpcode::X86_SUBri: case MInstOpcode::X86_SUBrm: case MInstOpcode::X86_SUBmr: return "sub";
+                case MInstOpcode::X86_INC: return "inc";
+                case MInstOpcode::X86_DEC: return "dec";
+                case MInstOpcode::X86_IMULrr: case MInstOpcode::X86_IMULrri: return "imul";
+                case MInstOpcode::X86_IDIVr: return "idiv";
+                case MInstOpcode::X86_DIVr: return "div";
+                case MInstOpcode::X86_CQO: return "cqo";
+                case MInstOpcode::X86_ANDrr: case MInstOpcode::X86_ANDri: case MInstOpcode::X86_ANDrm: case MInstOpcode::X86_ANDmr: return "and";
+                case MInstOpcode::X86_ORrr: case MInstOpcode::X86_ORri: case MInstOpcode::X86_ORrm: case MInstOpcode::X86_ORmr: return "or";
+                case MInstOpcode::X86_XORrr: case MInstOpcode::X86_XORri: case MInstOpcode::X86_XORrm: case MInstOpcode::X86_XORmr: return "xor";
+                case MInstOpcode::X86_SHLr: case MInstOpcode::X86_SHLcl: return "shl";
+                case MInstOpcode::X86_SHRr: case MInstOpcode::X86_SHRcl: return "shr";
+                case MInstOpcode::X86_TESTrr: return "test";
+                case MInstOpcode::X86_CMPrr: case MInstOpcode::X86_CMPri: case MInstOpcode::X86_CMPrm: return "cmp";
+                case MInstOpcode::X86_LEAr: case MInstOpcode::X86_LEAm: return "lea";
+                case MInstOpcode::X86_CALLpcrel: case MInstOpcode::X86_CALLr: return "call";
+                case MInstOpcode::X86_JMP: return "jmp";
+                case MInstOpcode::X86_JE: return "je"; case MInstOpcode::X86_JNE: return "jne";
+                case MInstOpcode::X86_JL: return "jl"; case MInstOpcode::X86_JLE: return "jle";
+                case MInstOpcode::X86_JG: return "jg"; case MInstOpcode::X86_JGE: return "jge";
+                case MInstOpcode::X86_SETL: return "setl"; case MInstOpcode::X86_SETG: return "setg";
+                case MInstOpcode::X86_SETE: return "sete"; case MInstOpcode::X86_SETNE: return "setne";
+                case MInstOpcode::X86_SETGE: return "setge"; case MInstOpcode::X86_SETLE: return "setle";
+                case MInstOpcode::X86_PUSHr: return "push"; case MInstOpcode::X86_POPr: return "pop";
+                case MInstOpcode::X86_LEAVE: return "leave"; case MInstOpcode::X86_RET: return "ret";
+                case MInstOpcode::X86_MOVDQU: return "vmovdqu";
+                case MInstOpcode::X86_VPBROADCASTQ: return "vpbroadcastq";
+                case MInstOpcode::X86_VZEROUPPER: return "vzeroupper";
+                case MInstOpcode::X86_CMOVE:  return "cmove";
+                case MInstOpcode::X86_CMOVNE: return "cmovne";
+                case MInstOpcode::X86_CMOVL:  return "cmovl";
+                case MInstOpcode::X86_CMOVLE: return "cmovle";
+                case MInstOpcode::X86_CMOVG:  return "cmovg";
+                case MInstOpcode::X86_CMOVGE: return "cmovge";
+                case MInstOpcode::X86_VPADDQ: return "vpaddq";
+                case MInstOpcode::X86_VPSUBQ: return "vpsubq";
+                case MInstOpcode::X86_VPMULUDQ: return "vpmuludq";
+                case MInstOpcode::X86_VPAND: return "vpand";
+                case MInstOpcode::X86_VPOR: return "vpor";
+                case MInstOpcode::X86_VPXOR: return "vpxor";
+                case MInstOpcode::X86_BSWAP: return "bswap";
+                case MInstOpcode::X86_ROL8:  return "rol";
+                case MInstOpcode::X86_INT3:  return "int3";
+                case MInstOpcode::X86_UD2:   return "ud2";
+                default: return "; unknown_op";
             }
         }
 
@@ -82,6 +120,14 @@ namespace gbpp {
         void emitInstruction(const MachineInstr& inst) override {
             if (inst.opcode == MInstOpcode::X86_INLINE_ASM) {
                 ss << "    " << inst.operands[0].label << "\n";
+                return;
+            }
+            if (inst.opcode == MInstOpcode::X86_VPBROADCASTQ && inst.operands[1].isReg()) {
+                std::string dstYmm = formatOperand(inst.operands[0]);
+                std::string srcReg = formatOperand(inst.operands[1]);
+                std::string tempXmm = "xmm" + std::to_string(inst.operands[0].reg);
+                ss << "    vmovq " << tempXmm << ", " << srcReg << "\n";
+                ss << "    vpbroadcastq " << dstYmm << ", " << tempXmm << "\n";
                 return;
             }
             ss << "    " << getMnemonic(inst.opcode);

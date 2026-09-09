@@ -16,11 +16,13 @@ namespace gbpp {
         Type* base = nullptr;
         bool isVolatile = false;
         bool isConst = false;
+        bool isVariadicFunc = false;
 
         bool isNull() const { return name == "null"; }
 
         std::vector<Type*> paramTypes;
         Type* returnType = nullptr;
+        std::vector<Type*> unionTypes;
 
         bool isFunction() const { return scalar == ScalarType::FunctionPtr; }
 
@@ -44,7 +46,10 @@ namespace gbpp {
             if (other.isNull() && this->isPointer()) return true;
 
             if (scalar != other.scalar) return false;
-            if (scalar == ScalarType::Struct) return name == other.name;
+            if (scalar == ScalarType::FunctionPtr) {
+                if (isVariadicFunc != other.isVariadicFunc) return false;
+            }
+            if (scalar == ScalarType::Struct || scalar == ScalarType::Union) return name == other.name;
             if (scalar == ScalarType::Pointer) return base && other.base && *base == *other.base;
             return sizeBytes == other.sizeBytes && isSigned == other.isSigned;
         }

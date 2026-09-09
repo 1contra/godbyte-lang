@@ -1,11 +1,11 @@
 /**
  * Copyright 2026 1contra
  *
- * Licensed under the Apache License, Version 2.0
+ * Licensed under the GNU General Public License, Version 3
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *     http://www.apache.org/licenses/LICENSE-2.0
+ *     https://www.gnu.org/licenses/gpl-3.0.html
  */
 
 #include "../include/lexer.hpp"
@@ -309,7 +309,7 @@ void cmdBuild(int argc, char* argv[]) {
         double ms = std::chrono::duration<double, std::milli>(end_time - start_time).count();
         timingsArray.push_back({ {"phase", phase}, {"duration_ms", ms} });
         return end_time;
-        };
+    };
 
     divo::print_group("Frontend Pipeline (File Aggregation)");
 
@@ -345,7 +345,6 @@ void cmdBuild(int argc, char* argv[]) {
     divo::Logger::instance().log(divo::LogLevel::DEBUG, "Spawning Semantic Analyzer pass...");
 
     std::vector<gbpp::Program*> progPtrs = { &mergedProgram };
-
     gbpp::Sema analyzer;
     if (!analyzer.analyzeModules(progPtrs)) {
         divo::Logger::instance().log(divo::LogLevel::ERR, "Semantic Verification aborted compilation.");

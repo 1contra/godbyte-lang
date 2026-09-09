@@ -1,11 +1,11 @@
 /**
  * Copyright 2026 1contra
  *
- * Licensed under the Apache License, Version 2.0
+ * Licensed under the GNU General Public License, Version 3
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *     http://www.apache.org/licenses/LICENSE-2.0
+ *     https://www.gnu.org/licenses/gpl-3.0.html
  */
 
 #pragma once
@@ -94,6 +94,9 @@ namespace gbpp::lsp {
                     for (auto& enm : importedProg->enums) {
                         mainProgram->enums.push_back(std::move(enm));
                     }
+                    for (auto& var : importedProg->globalVars) {
+                        mainProgram->globalVars.push_back(std::move(var));
+                    }
                 }
             }
             else {
@@ -109,11 +112,24 @@ namespace gbpp::lsp {
         while (std::cin) {
             std::string line;
             int contentLength = 0;
-            while (std::getline(std::cin, line) && line != "\r") {
+
+            while (std::getline(std::cin, line)) {
+                if (!line.empty() && line.back() == '\r') {
+                    line.pop_back();
+                }
+
+                if (line.empty()) {
+                    break;
+                }
+
                 if (line.starts_with("Content-Length: ")) {
-                    contentLength = std::stoi(line.substr(16));
+                    try {
+                        contentLength = std::stoi(line.substr(16));
+                    }
+                    catch (...) {}
                 }
             }
+
             if (contentLength > 0) {
                 std::vector<char> buffer(contentLength);
                 std::cin.read(buffer.data(), contentLength);
@@ -560,9 +576,13 @@ namespace gbpp::lsp {
                         }
                     }
                     std::string parentFqn = (baseIdx >= 0 && tokens[baseIdx].type == TokenType::Identifier) ? tokens[baseIdx].text : "";
-
                     if (!parentFqn.empty() && (currentSema->m_structs.count(parentFqn) || currentSema->m_generic_structs.count(parentFqn))) {
-                        methodFullName = parentFqn + "_" + token.text;
+                        if (currentSema->m_functions.count(parentFqn + "::" + token.text) || currentSema->m_generic_functions.count(parentFqn + "::" + token.text)) {
+                            methodFullName = parentFqn + "::" + token.text;
+                        }
+                        else {
+                            methodFullName = parentFqn + "_" + token.text;
+                        }
                     }
                 }
                 else if (i >= 2 && tokens[i - 1].type == TokenType::Dot) {
@@ -600,7 +620,14 @@ namespace gbpp::lsp {
                     else {
                         auto [pStruct, pField] = resolveDotChain(i - 2);
                         std::string vType = pField ? cleanTypeName(pField->parsedType.toString()) : cleanTypeName(getVarType(tokens[i - 2].text));
-                        if (!vType.empty()) methodFullName = vType + "_" + token.text;
+                        if (!vType.empty()) {
+                            if (currentSema->m_functions.count(vType + "::" + token.text) || currentSema->m_generic_functions.count(vType + "::" + token.text)) {
+                                methodFullName = vType + "::" + token.text;
+                            }
+                            else {
+                                methodFullName = vType + "_" + token.text;
+                            }
+                        }
                     }
                 }
 
@@ -849,6 +876,7 @@ namespace gbpp::lsp {
                         else if (varType.starts_with("ref ")) meta += makeBullet("Memory", "Borrowed reference");
 
                         hoverMarkdown += makeSection("Symbol Info", meta);
+                        resolved = true;
                     }
                 }
 
@@ -931,6 +959,24 @@ namespace gbpp::lsp {
                                 "Builtin",
                                 "Returns compile-time size in bytes."
                             );
+                        break;
+                    case TokenType::BuiltinAllocate:
+                        hoverMarkdown = makeCodeBlock("__builtin_allocate(size: u64, align: u64) -> owner u8") + makeSection("Builtin", "Allocates aligned memory on the heap.");
+                        break;
+                    case TokenType::BuiltinMemfill:
+                        hoverMarkdown = makeCodeBlock("__builtin_memfill(dest: ref u8, val: u8, size: u64) -> void") + makeSection("Builtin", "Fast intrinsic memory fill.");
+                        break;
+                    case TokenType::BuiltinMemcpy:
+                        hoverMarkdown = makeCodeBlock("__builtin_memcpy(dest: ref u8, src: ref u8, size: u64) -> void") + makeSection("Builtin", "Fast intrinsic memory copy.");
+                        break;
+                    case TokenType::BuiltinTrap:
+                        hoverMarkdown = makeCodeBlock("__builtin_trap() -> void") + makeSection("Builtin", "Emits a hardware breakpoint (int3).");
+                        break;
+                    case TokenType::BuiltinBswap:
+                        hoverMarkdown = makeCodeBlock("__builtin_bswap*(val: T) -> T") + makeSection("Builtin", "Reverses the byte order of a 16, 32, or 64-bit integer.");
+                        break;
+                    case TokenType::BuiltinUnreachable:
+                        hoverMarkdown = makeCodeBlock("__builtin_unreachable() -> void") + makeSection("Builtin", "Hints to the optimizer that this code path is dead.");
                         break;
 
                     default:
@@ -1019,7 +1065,8 @@ namespace gbpp::lsp {
                     { "tokenModifiers", {
                         "declaration",
                         "definition",
-                        "readonly"
+                        "readonly",
+                        "unnecessary"
                     }}
                 }},
                 { "full", true }
@@ -1075,7 +1122,31 @@ namespace gbpp::lsp {
                 j--;
             }
 
-            if (!varName.empty()) {
+            if (varName == "target") {
+                std::vector<std::pair<std::string, std::string>> targetProps = {
+                    {"is_windows", "bool (True if target OS is Windows)"},
+                    {"is_linux", "bool (True if target OS is Linux)"},
+                    {"is_macos", "bool (True if target OS is macOS)"},
+                    {"is_wasm", "bool (True if target OS is WebAssembly)"},
+                    {"is_x86_64", "bool (True if target architecture is x86_64)"},
+                    {"is_arm64", "bool (True if target architecture is ARM64)"},
+                    {"is_wasm32", "bool (True if target architecture is WASM32)"},
+                    {"is_little_endian", "bool (True if system uses Little Endian byte ordering)"},
+                    {"is_big_endian", "bool (True if system uses Big Endian byte ordering)"},
+                    {"pointer_size", "i64 (Size of memory addresses in bytes: 4 or 8)"}
+                };
+
+                for (const auto& prop : targetProps) {
+                    items.push_back({
+                        {"label", prop.first},
+                        {"kind", 10},
+                        {"detail", "compiler.target property"},
+                        {"documentation", prop.second}
+                   });
+                }
+            }
+
+            if (!varName.empty() && varName != "target") {
                 std::string typeName = "";
                 size_t absPos = 0;
                 int lineCnt = 0;
@@ -1177,29 +1248,32 @@ namespace gbpp::lsp {
                     addFields(currentSema->m_generic_structs);
 
                     std::string methodPrefix = typeName + "_";
+                    std::string methodPrefix2 = typeName + "::";
+
                     auto addMethods = [&](const auto& funcMap) {
                         for (const auto& [fName, fnDecl] : funcMap) {
-                            if (fName.starts_with(methodPrefix)) {
-                                std::string methodName = fName.substr(methodPrefix.length());
-                                std::string sig = "fn(";
+                            std::string methodName;
 
+                            if (fName.starts_with(methodPrefix)) methodName = fName.substr(methodPrefix.length());
+                            else if (fName.starts_with(methodPrefix2)) methodName = fName.substr(methodPrefix2.length());
+
+                            if (!methodName.empty()) {
+                                std::string sig = "fn(";
                                 bool hasThis = !fnDecl->params.empty() && fnDecl->params[0].name == "this";
                                 size_t startIdx = hasThis ? 1 : 0;
-
                                 for (size_t pIdx = startIdx; pIdx < fnDecl->params.size(); ++pIdx) {
                                     sig += fnDecl->params[pIdx].name + ": " + fnDecl->params[pIdx].parsedType.toString();
                                     if (pIdx + 1 < fnDecl->params.size()) sig += ", ";
                                 }
                                 sig += ") -> " + fnDecl->returnType.toString();
-
                                 items.push_back({
                                     {"label", methodName},
                                     {"kind", 2},
                                     {"detail", sig}
-                                });
+                                    });
                             }
                         }
-                        };
+                    };
                     addMethods(currentSema->m_functions);
                     addMethods(currentSema->m_generic_functions);
                 }
@@ -1270,17 +1344,22 @@ namespace gbpp::lsp {
                 auto tryAddMethods = [&](const auto& structMap) {
                     if (structMap.count(prefix)) {
                         std::string methodPrefix = prefix + "_";
+                        std::string methodPrefix2 = prefix + "::";
+
                         auto addStaticMethods = [&](const auto& funcMap) {
                             for (const auto& [fName, fnDecl] : funcMap) {
-                                if (fName.starts_with(methodPrefix)) {
-                                    std::string methodName = fName.substr(methodPrefix.length());
+                                std::string methodName;
+
+                                if (fName.starts_with(methodPrefix)) methodName = fName.substr(methodPrefix.length());
+                                else if (fName.starts_with(methodPrefix2)) methodName = fName.substr(methodPrefix2.length());
+
+                                if (!methodName.empty()) {
                                     std::string sig = "fn(";
                                     for (size_t pIdx = 0; pIdx < fnDecl->params.size(); ++pIdx) {
                                         sig += fnDecl->params[pIdx].name + ": " + fnDecl->params[pIdx].parsedType.toString();
                                         if (pIdx + 1 < fnDecl->params.size()) sig += ", ";
                                     }
                                     sig += ") -> " + fnDecl->returnType.toString();
-
                                     items.push_back({
                                         {"label", methodName},
                                         {"kind", 3},
@@ -1288,11 +1367,11 @@ namespace gbpp::lsp {
                                     });
                                 }
                             }
-                            };
+                        };
                         addStaticMethods(currentSema->m_functions);
                         addStaticMethods(currentSema->m_generic_functions);
                     }
-                    };
+                };
                 tryAddMethods(currentSema->m_structs);
                 tryAddMethods(currentSema->m_generic_structs);
             }
@@ -1351,12 +1430,53 @@ namespace gbpp::lsp {
                 }
             }
 
+            std::vector<std::pair<std::string, std::string>> environmentMacros = {
+                {"__WIN32", "Deprecated: Use compiler.target.is_windows instead"},
+                {"__WIN64", "Deprecated: Use compiler.target.is_windows && compiler.target.pointer_size == 8 instead"},
+                {"__LINUX", "Deprecated: Use compiler.target.is_linux instead"},
+                {"__MACOS", "Deprecated: Use compiler.target.is_macos instead"},
+                {"__WASM", "Deprecated: Use compiler.target.is_wasm instead"},
+                {"__X86_64", "Deprecated: Use compiler.target.is_x86_64 instead"},
+                {"__ARM64", "Deprecated: Use compiler.target.is_arm64 instead"},
+                {"__SYSV", "Deprecated: Use System V calling convention check rules instead"},
+                {"__LITTLE_ENDIAN__", "Deprecated: Use compiler.target.is_little_endian instead"},
+                {"__BIG_ENDIAN__", "Deprecated: Use compiler.target.is_big_endian instead"},
+                {"__PTR_SIZE__", "Deprecated: Use compiler.target.pointer_size instead"},
+                {"compiler", "Built-in compiler intrinsic gateway namespace"}
+            };
+
+            for (const auto& macro : environmentMacros) {
+                items.push_back({
+                    {"label", macro.first},
+                    {"kind", 25},
+                    {"detail", macro.second}
+                });
+            }
+
             std::vector<std::string> keywords = {
                 "fn", "struct", "enum", "alias", "return", "if", "else", "while", "u8", "u16", "u32", "u64",
                 "i8", "i16", "i32", "i64", "f32", "f64", "void", "ref", "owner", "alloc", "sizeof", "cast", "cast_bits", "namespace", "for", "true", "false", "null"
             };
             for (const auto& kw : keywords) {
                 items.push_back({ {"label", kw}, {"kind", 14} });
+            }
+            std::vector<std::pair<std::string, std::string>> builtins = {
+                {"__builtin_allocate", "fn(size: u64, align: u64) -> owner u8"},
+                {"__builtin_memfill", "fn(dest: ref u8, val: u8, size: u64) -> void"},
+                {"__builtin_memcpy", "fn(dest: ref u8, src: ref u8, size: u64) -> void"},
+                {"__builtin_trap", "fn() -> void"},
+                {"__builtin_bswap16", "fn(val: u16) -> u16"},
+                {"__builtin_bswap32", "fn(val: u32) -> u32"},
+                {"__builtin_bswap64", "fn(val: u64) -> u64"},
+                {"__builtin_unreachable", "fn() -> void"}
+            };
+
+            for (const auto& builtin : builtins) {
+                items.push_back({
+                    {"label", builtin.first},
+                    {"kind", 3},
+                    {"detail", builtin.second}
+                });
             }
         }
 
@@ -1386,6 +1506,10 @@ namespace gbpp::lsp {
     }
 
     void LSPServer::compileAndPublishDiagnostics(const std::string& uri, const std::string& text) {
+        Parser::m_comptimeVars.clear();
+        Parser::m_lockedVars.clear();
+        importTokenCache.clear();
+
         json diagnostics = json::array();
 
         try {
@@ -1396,6 +1520,12 @@ namespace gbpp::lsp {
 
             if (parser.hasErrors) {
                 for (std::string errStr : parser.errors) {
+                    int severity = 1;
+                    if (errStr.starts_with("Warning: ")) {
+                        severity = 2;
+                        errStr = errStr.substr(9);
+                    }
+
                     int line = 0, col = 0;
                     if (errStr.starts_with("Line ")) {
                         size_t colonPos = errStr.find(':');
@@ -1409,12 +1539,10 @@ namespace gbpp::lsp {
                             catch (...) {}
                         }
                     }
-
                     line = std::max(0, line);
                     col = std::max(0, col);
-
                     diagnostics.push_back({
-                        {"severity", 1},
+                        {"severity", severity},
                         {"range", {
                             {"start", {{"line", line}, {"character", col}}},
                             {"end", {{"line", line}, {"character", col + 5}}}
@@ -1451,8 +1579,47 @@ namespace gbpp::lsp {
                 auto* currentSema = documentSemas[uri].get();
 
                 for (std::string errStr : currentSema->errors) {
-                    int line = 0, col = 0;
+                    int severity = 1;
+                    if (errStr.starts_with("Warning: ")) {
+                        severity = 2;
+                        errStr = errStr.substr(9);
+                    }
 
+                    json relatedInfo = json::array();
+                    size_t relPos = errStr.find("\t[REL|");
+                    if (relPos != std::string::npos) {
+                        size_t endPos = errStr.find("]", relPos);
+                        if (endPos != std::string::npos) {
+                            std::string relData = errStr.substr(relPos + 6, endPos - (relPos + 6));
+                            errStr = errStr.substr(0, relPos);
+
+                            size_t p1 = relData.find('|');
+                            if (p1 != std::string::npos) {
+                                std::string rUri = relData.substr(0, p1);
+                                size_t p2 = relData.find('|', p1 + 1);
+                                if (p2 != std::string::npos) {
+                                    int rLine = std::max(0, std::stoi(relData.substr(p1 + 1, p2 - p1 - 1)) - 1);
+                                    size_t p3 = relData.find('|', p2 + 1);
+                                    if (p3 != std::string::npos) {
+                                        int rCol = std::max(0, std::stoi(relData.substr(p2 + 1, p3 - p2 - 1)) - 1);
+                                        std::string rMsg = relData.substr(p3 + 1);
+                                        relatedInfo.push_back({
+                                            {"location", {
+                                                {"uri", rUri},
+                                                {"range", {
+                                                    {"start", {{"line", rLine}, {"character", rCol}}},
+                                                    {"end", {{"line", rLine}, {"character", rCol + rMsg.length()}}}
+                                                }}
+                                            }},
+                                            {"message", "Definition of " + rMsg}
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    int line = 0, col = 0;
                     if (errStr.starts_with("Line ")) {
                         size_t colonPos = errStr.find(':');
                         size_t dashPos = errStr.find(" - ");
@@ -1465,19 +1632,23 @@ namespace gbpp::lsp {
                             catch (...) {}
                         }
                     }
-
                     line = std::max(0, line);
                     col = std::max(0, col);
 
-                    diagnostics.push_back({
-                        {"severity", 1},
+                    json diag = {
+                        {"severity", severity},
                         {"range", {
                             {"start", {{"line", line}, {"character", col}}},
                             {"end", {{"line", line}, {"character", col + 5}}}
                         }},
                         {"message", errStr},
                         {"source", "gbpp-analyzer"}
-                    });
+                    };
+
+                    if (!relatedInfo.empty()) {
+                        diag["relatedInformation"] = relatedInfo;
+                    }
+                    diagnostics.push_back(diag);
                 }
 
                 for (const auto& fn : currentProgram->functions) {
@@ -1493,8 +1664,14 @@ namespace gbpp::lsp {
         }
         catch (const std::exception& e) {
             std::string errStr = e.what();
-            int line = 0, col = 0;
+            int severity = 1;
 
+            if (errStr.starts_with("Warning: ")) {
+                severity = 2;
+                errStr = errStr.substr(9);
+            }
+
+            int line = 0, col = 0;
             if (errStr.starts_with("Line ")) {
                 size_t colonPos = errStr.find(':');
                 size_t dashPos = errStr.find(" - ");
@@ -1507,12 +1684,10 @@ namespace gbpp::lsp {
                     catch (...) {}
                 }
             }
-
             line = std::max(0, line);
             col = std::max(0, col);
-
             diagnostics.push_back({
-                {"severity", 1},
+                {"severity", severity},
                 {"range", {
                     {"start", {{"line", line}, {"character", col}}},
                     {"end", {{"line", line}, {"character", col + 5}}}
@@ -1521,7 +1696,6 @@ namespace gbpp::lsp {
                 {"source", "gbpp"}
             });
         }
-
         sendNotification("textDocument/publishDiagnostics", {
             {"uri", uri},
             {"diagnostics", diagnostics}
@@ -1544,10 +1718,34 @@ namespace gbpp::lsp {
         std::string currentNamespace = "";
         int braceDepth = 0;
 
+        std::string activeStruct = "";
+        int structBraceDepth = -1;
+
         for (size_t i = 0; i < tokens.size(); ++i) {
             const auto& token = tokens[i];
 
-            if (token.type == TokenType::LBrace) braceDepth++;
+            if (token.type == TokenType::Struct && i + 1 < tokens.size() && tokens[i + 1].type == TokenType::Identifier) {
+                activeStruct = tokens[i + 1].text;
+            }
+
+            if (token.type == TokenType::LBrace) {
+                braceDepth++;
+                if (!activeStruct.empty() && structBraceDepth == -1) {
+                    structBraceDepth = braceDepth;
+                }
+            }
+            else if (token.type == TokenType::RBrace) {
+                if (structBraceDepth == braceDepth) {
+                    activeStruct = "";
+                    structBraceDepth = -1;
+                }
+                braceDepth--;
+                if (!nsStack.empty() && nsStack.back().second == braceDepth) {
+                    nsStack.pop_back();
+                    currentNamespace = "";
+                    for (const auto& ns : nsStack) currentNamespace += (currentNamespace.empty() ? "" : "::") + ns.first;
+                }
+            }
             else if (token.type == TokenType::RBrace) {
                 braceDepth--;
                 if (!nsStack.empty() && nsStack.back().second == braceDepth) {
@@ -1673,9 +1871,13 @@ namespace gbpp::lsp {
                             }
                         }
                         std::string parentFqn = (baseIdx >= 0 && tokens[baseIdx].type == TokenType::Identifier) ? tokens[baseIdx].text : "";
-
                         if (!parentFqn.empty() && currentSema && (currentSema->m_structs.count(parentFqn) || currentSema->m_generic_structs.count(parentFqn))) {
-                            methodFullName = parentFqn + "_" + token.text;
+                            if (currentSema->m_functions.count(parentFqn + "::" + token.text) || currentSema->m_generic_functions.count(parentFqn + "::" + token.text)) {
+                                methodFullName = parentFqn + "::" + token.text;
+                            }
+                            else {
+                                methodFullName = parentFqn + "_" + token.text;
+                            }
                         }
                     }
                     else if (i >= 2 && tokens[i - 1].type == TokenType::Dot) {
@@ -1686,7 +1888,14 @@ namespace gbpp::lsp {
                         else {
                             auto [pStruct, pField] = resolveDotChain(i - 2);
                             std::string vType = pField ? cleanTypeName(pField->parsedType.toString()) : cleanTypeName(getVarType(tokens[i - 2].text));
-                            if (!vType.empty()) methodFullName = vType + "_" + token.text;
+                            if (!vType.empty()) {
+                                if (currentSema->m_functions.count(vType + "::" + token.text) || currentSema->m_generic_functions.count(vType + "::" + token.text)) {
+                                    methodFullName = vType + "::" + token.text;
+                                }
+                                else {
+                                    methodFullName = vType + "_" + token.text;
+                                }
+                            }
                         }
                     }
 
@@ -1715,6 +1924,26 @@ namespace gbpp::lsp {
                             std::string targetFqn = currentSema->m_aliases.count(scopedFqn) ? scopedFqn : fqn;
                             for (const auto& alias : currentProgram->aliases) {
                                 if (alias->name == targetFqn) { targetLoc = alias->loc; break; }
+                            }
+                        }
+                        if (targetLoc.line == 0 && !activeStruct.empty()) {
+                            std::string internalMethod1 = activeStruct + "::" + token.text;
+                            std::string internalMethod2 = activeStruct + "_" + token.text;
+
+                            if (currentSema->m_functions.count(internalMethod1)) targetLoc = currentSema->m_functions[internalMethod1]->loc;
+                            else if (currentSema->m_generic_functions.count(internalMethod1)) targetLoc = currentSema->m_generic_functions[internalMethod1]->loc;
+                            else if (currentSema->m_functions.count(internalMethod2)) targetLoc = currentSema->m_functions[internalMethod2]->loc;
+                            else if (currentSema->m_generic_functions.count(internalMethod2)) targetLoc = currentSema->m_generic_functions[internalMethod2]->loc;
+
+                            if (targetLoc.line == 0) {
+                                StructDecl* st = nullptr;
+                                if (currentSema->m_structs.count(activeStruct)) st = currentSema->m_structs[activeStruct];
+                                else if (currentSema->m_generic_structs.count(activeStruct)) st = currentSema->m_generic_structs[activeStruct];
+                                if (st) {
+                                    for (auto& field : st->fields) {
+                                        if (field.name == token.text) { targetLoc = st->loc; break; }
+                                    }
+                                }
                             }
                         }
                         else if (currentProgram) {
@@ -1818,19 +2047,83 @@ namespace gbpp::lsp {
         std::string uri = msg["params"]["textDocument"]["uri"];
         Lexer lexer(documents[uri], uri);
         auto tokens = lexer.tokenize();
-
         std::vector<int> data;
         int prevLine = 0;
         int prevChar = 0;
-
         bool inMacro = false;
         bool nextIsConstructorOffset = false;
 
         auto* currentSema = documentSemas.count(uri) ? documentSemas[uri].get() : nullptr;
-
         std::vector<std::pair<std::string, int>> nsStack;
         std::string currentNamespace = "";
         int braceDepth = 0;
+        bool nextIdentIsConfig = false;
+
+        std::unordered_map<std::string, bool> localComptimeVars;
+        int inactiveBraceDepth = -1;
+        bool inInactiveBlock = false;
+        bool waitingForInactiveBrace = false;
+
+        std::map<int, bool> comptimeChainTaken;
+        std::map<int, bool> isComptimeBlock;
+        bool lastClosedBlockWasComptime = false;
+        bool nextBlockIsComptime = false;
+
+        auto* currentProgram = documentPrograms.count(uri) ? documentPrograms[uri].get() : nullptr;
+        std::set<std::string> configSymbols;
+
+        if (currentProgram) {
+            for (const auto& var : currentProgram->globalVars) {
+                if (hasAttribute(var->attributes, AttrKind::Config)) configSymbols.insert(var->name);
+            }
+            for (const auto& fn : currentProgram->functions) {
+                if (hasAttribute(fn->attributes, AttrKind::Config)) configSymbols.insert(fn->name);
+                for (const auto& p : fn->params) {
+                    if (hasAttribute(p.attributes, AttrKind::Config)) configSymbols.insert(p.name);
+                }
+                if (fn->body) {
+                    std::function<void(const BlockStmt*)> scanBlock = [&](const BlockStmt* b) {
+                        if (!b) return;
+                        for (const auto& stmt : b->statements) {
+                            if (auto v = dynamic_cast<VarDecl*>(stmt.get())) {
+                                if (hasAttribute(v->attributes, AttrKind::Config)) configSymbols.insert(v->name);
+                            }
+                            else if (auto bs = dynamic_cast<BlockStmt*>(stmt.get())) {
+                                scanBlock(bs);
+                            }
+                            else if (auto is = dynamic_cast<IfStmt*>(stmt.get())) {
+                                scanBlock(dynamic_cast<BlockStmt*>(is->thenBranch.get()));
+                                if (is->elseBranch) scanBlock(dynamic_cast<BlockStmt*>(is->elseBranch.get()));
+                            }
+                            else if (auto ws = dynamic_cast<WhileStmt*>(stmt.get())) {
+                                scanBlock(dynamic_cast<BlockStmt*>(ws->body.get()));
+                            }
+                            else if (auto fs = dynamic_cast<ForStmt*>(stmt.get())) {
+                                if (fs->init) {
+                                    if (auto v = dynamic_cast<VarDecl*>(fs->init.get())) {
+                                        if (hasAttribute(v->attributes, AttrKind::Config)) configSymbols.insert(v->name);
+                                    }
+                                }
+                                scanBlock(dynamic_cast<BlockStmt*>(fs->body.get()));
+                            }
+                        }
+                        };
+                    scanBlock(fn->body.get());
+                }
+            }
+            for (const auto& st : currentProgram->structs) {
+                if (hasAttribute(st->attributes, AttrKind::Config)) configSymbols.insert(st->name);
+                for (const auto& f : st->fields) {
+                    if (hasAttribute(f.attributes, AttrKind::Config)) configSymbols.insert(f.name);
+                }
+            }
+            for (const auto& en : currentProgram->enums) {
+                if (hasAttribute(en->attributes, AttrKind::Config)) configSymbols.insert(en->name);
+            }
+            for (const auto& al : currentProgram->aliases) {
+                if (hasAttribute(al->attributes, AttrKind::Config)) configSymbols.insert(al->name);
+            }
+        }
 
         std::set<std::string> knownGenericParams;
         if (currentSema) {
@@ -1844,8 +2137,8 @@ namespace gbpp::lsp {
 
         std::string activeStructForSemantics = "";
         int structBraceDepthForSemantics = -1;
-
         std::set<std::string> knownConstants;
+
         for (size_t i = 0; i < tokens.size(); ++i) {
             if (tokens[i].type == TokenType::Const &&
                 i + 2 < tokens.size() &&
@@ -1856,7 +2149,6 @@ namespace gbpp::lsp {
             else if (tokens[i].type == TokenType::Identifier &&
                 i + 1 < tokens.size() &&
                 tokens[i + 1].type == TokenType::Colon) {
-
                 for (size_t j = i + 2; j < tokens.size(); ++j) {
                     if (tokens[j].type == TokenType::Const) {
                         knownConstants.insert(tokens[i].text);
@@ -1876,8 +2168,38 @@ namespace gbpp::lsp {
 
         for (size_t i = 0; i < tokens.size(); ++i) {
             const auto& token = tokens[i];
-
             int tokenModifier = 0;
+            bool isClosingInactive = false;
+
+            if (!inInactiveBlock && !waitingForInactiveBrace && token.type == TokenType::Identifier && i + 1 < tokens.size()) {
+                int valIdx = -1;
+                if (tokens[i + 1].type == TokenType::Equal && i + 2 < tokens.size()) {
+                    valIdx = i + 2;
+                }
+                else if (i + 3 < tokens.size() && tokens[i + 1].type == TokenType::Colon && tokens[i + 3].type == TokenType::Equal && i + 4 < tokens.size()) {
+                    valIdx = i + 4;
+                }
+
+                if (valIdx != -1) {
+                    if (tokens[valIdx].type == TokenType::True) localComptimeVars[token.text] = true;
+                    else if (tokens[valIdx].type == TokenType::False) localComptimeVars[token.text] = false;
+                }
+            }
+
+            if (token.type == TokenType::At && i + 1 < tokens.size() && tokens[i + 1].text == "config") {
+                nextIdentIsConfig = true;
+            }
+            if (nextIdentIsConfig && token.type == TokenType::Identifier) {
+                configSymbols.insert(token.text);
+                nextIdentIsConfig = false;
+            }
+            if (token.type == TokenType::Semicolon || token.type == TokenType::LBrace || token.type == TokenType::Equal) {
+                nextIdentIsConfig = false;
+            }
+
+            if (token.type != TokenType::Else && token.type != TokenType::RBrace) {
+                lastClosedBlockWasComptime = false;
+            }
 
             if (token.type == TokenType::Struct && i + 1 < tokens.size() && tokens[i + 1].type == TokenType::Identifier) {
                 activeStructForSemantics = tokens[i + 1].text;
@@ -1885,38 +2207,126 @@ namespace gbpp::lsp {
 
             if (token.type == TokenType::LBrace) {
                 braceDepth++;
+                isComptimeBlock[braceDepth] = nextBlockIsComptime;
+                nextBlockIsComptime = false;
+
                 if (!activeStructForSemantics.empty() && structBraceDepthForSemantics == -1) {
                     structBraceDepthForSemantics = braceDepth;
                 }
+                if (waitingForInactiveBrace) {
+                    inactiveBraceDepth = braceDepth;
+                    inInactiveBlock = true;
+                    waitingForInactiveBrace = false;
+                }
             }
             else if (token.type == TokenType::RBrace) {
+                lastClosedBlockWasComptime = isComptimeBlock[braceDepth];
                 if (structBraceDepthForSemantics == braceDepth) {
                     activeStructForSemantics = "";
                     structBraceDepthForSemantics = -1;
                 }
+                if (inInactiveBlock && inactiveBraceDepth == braceDepth) {
+                    inInactiveBlock = false;
+                    inactiveBraceDepth = -1;
+                    isClosingInactive = true;
+                }
                 braceDepth--;
-
                 if (!nsStack.empty() && nsStack.back().second == braceDepth) {
                     nsStack.pop_back();
-                    currentNamespace = "";
-                    for (const auto& ns : nsStack) currentNamespace += (currentNamespace.empty() ? "" : "::") + ns.first;
+                    currentNamespace.clear();
+                    for (const auto& ns : nsStack) {
+                        if (!currentNamespace.empty()) currentNamespace += "::";
+                        currentNamespace += ns.first;
+                    }
                 }
             }
             else if (token.type == TokenType::Namespace && i + 1 < tokens.size() && tokens[i + 1].type == TokenType::Identifier) {
                 std::string nsName = tokens[i + 1].text;
                 nsStack.push_back({ nsName, braceDepth });
-                currentNamespace = currentNamespace.empty() ? nsName : currentNamespace + "::" + nsName;
+                if (currentNamespace.empty())
+                    currentNamespace = nsName;
+                else
+                    currentNamespace += "::" + nsName;
+            }
+
+            if (!inInactiveBlock) {
+                if (token.type == TokenType::Comptime && i + 1 < tokens.size() && tokens[i + 1].type == TokenType::If) {
+                    size_t j = i + 2;
+                    if (j < tokens.size() && tokens[j].type == TokenType::LParen) {
+                        j++;
+                        bool isNot = false;
+                        if (j < tokens.size() && tokens[j].type == TokenType::Bang) { isNot = true; j++; }
+                        if (j < tokens.size() && tokens[j].type == TokenType::Identifier) {
+                            std::string varName = tokens[j].text;
+                            bool val = localComptimeVars.count(varName) ? localComptimeVars[varName] : (Parser::m_comptimeVars.count(varName) ? Parser::m_comptimeVars[varName] != 0 : false);
+                            bool condition = isNot ? !val : val;
+
+                            comptimeChainTaken[braceDepth + 1] = condition;
+                            waitingForInactiveBrace = !condition;
+                            nextBlockIsComptime = true;
+                        }
+                    }
+                }
+                else if (token.type == TokenType::Else && lastClosedBlockWasComptime) {
+                    if (i + 1 < tokens.size() && tokens[i + 1].type == TokenType::If) {
+                        size_t j = i + 2;
+                        if (j < tokens.size() && tokens[j].type == TokenType::LParen) {
+                            j++;
+                            bool isNot = false;
+                            if (j < tokens.size() && tokens[j].type == TokenType::Bang) { isNot = true; j++; }
+                            if (j < tokens.size() && tokens[j].type == TokenType::Identifier) {
+                                std::string varName = tokens[j].text;
+                                bool val = localComptimeVars.count(varName) ? localComptimeVars[varName] : (Parser::m_comptimeVars.count(varName) ? Parser::m_comptimeVars[varName] != 0 : false);
+                                bool condition = isNot ? !val : val;
+
+                                if (comptimeChainTaken.count(braceDepth + 1) && comptimeChainTaken[braceDepth + 1]) {
+                                    waitingForInactiveBrace = true;
+                                }
+                                else {
+                                    if (condition) {
+                                        comptimeChainTaken[braceDepth + 1] = true;
+                                        waitingForInactiveBrace = false;
+                                    }
+                                    else {
+                                        waitingForInactiveBrace = true;
+                                    }
+                                }
+                                nextBlockIsComptime = true;
+                            }
+                        }
+                    }
+                    else {
+                        if (comptimeChainTaken.count(braceDepth + 1) && comptimeChainTaken[braceDepth + 1]) {
+                            waitingForInactiveBrace = true;
+                        }
+                        else {
+                            waitingForInactiveBrace = false;
+                            comptimeChainTaken[braceDepth + 1] = true;
+                        }
+                        nextBlockIsComptime = true;
+                    }
+                }
             }
 
             int tokenTypeIdx = getSemanticTokenType(token.type, token.text, currentSema);
 
             if (!inMacro && token.type == TokenType::Identifier && token.text != "else") {
-                if (token.text == "this" || token.text == "self") {
+                bool isConfig = configSymbols.count(token.text) ||
+                    configSymbols.count(currentNamespace.empty() ? token.text : currentNamespace + "::" + token.text);
+                if (!isConfig && i >= 2 && tokens[i - 1].type == TokenType::DoubleColon && tokens[i - 2].type == TokenType::Identifier) {
+                    if (configSymbols.count(tokens[i - 2].text + "_" + token.text)) isConfig = true;
+                    if (configSymbols.count(tokens[i - 2].text + "::" + token.text)) isConfig = true;
+                }
+
+                if (isConfig) {
+                    tokenTypeIdx = 0;
+                }
+                else if (token.text == "this" || token.text == "self") {
                     tokenTypeIdx = 0;
                 }
                 else if (knownConstants.count(token.text)) {
                     tokenTypeIdx = 4;
-                    tokenModifier = 4;
+                    tokenModifier |= 4;
                 }
                 else if (knownGenericParams.count(token.text)) {
                     tokenTypeIdx = 1;
@@ -1924,10 +2334,8 @@ namespace gbpp::lsp {
                 else {
                     int l = i;
                     while (l >= 2 && tokens[l - 1].type == TokenType::DoubleColon) l -= 2;
-
                     std::string fqn = "";
                     for (int k = l; k <= i; ++k) fqn += tokens[k].text;
-
                     std::string scopedFqn = currentNamespace.empty() ? fqn : currentNamespace + "::" + fqn;
 
                     if (i > 0 && tokens[i - 1].type == TokenType::Namespace) {
@@ -1959,7 +2367,6 @@ namespace gbpp::lsp {
                         if (lookahead < tokens.size() && tokens[lookahead].type == TokenType::DoubleColon) {
                             isType = true;
                         }
-
                         if (isType) {
                             tokenTypeIdx = 2;
                         }
@@ -1973,7 +2380,6 @@ namespace gbpp::lsp {
                     else {
                         std::string methodFullName = "";
                         if (i >= 2 && tokens[i - 1].type == TokenType::DoubleColon) {
-
                             int baseIdx = i - 2;
                             if (baseIdx >= 0 && tokens[baseIdx].type == TokenType::GT) {
                                 int depth = 1;
@@ -1985,7 +2391,6 @@ namespace gbpp::lsp {
                                 }
                             }
                             std::string parentFqn = (baseIdx >= 0 && tokens[baseIdx].type == TokenType::Identifier) ? tokens[baseIdx].text : "";
-
                             if (currentSema && !parentFqn.empty() && (currentSema->m_structs.count(parentFqn) || currentSema->m_generic_structs.count(parentFqn))) {
                                 methodFullName = parentFqn + "_" + token.text;
                             }
@@ -2023,15 +2428,12 @@ namespace gbpp::lsp {
             if (!inMacro && token.type == TokenType::LBracket && i + 1 < tokens.size() && tokens[i + 1].type == TokenType::LBracket) {
                 inMacro = true;
             }
-
             if (inMacro) {
                 tokenTypeIdx = 1;
             }
-
             if (inMacro && token.type == TokenType::RBracket && i > 0 && tokens[i - 1].type == TokenType::RBracket) {
                 inMacro = false;
             }
-
             if (!inMacro) {
                 if (token.type == TokenType::At) {
                     tokenTypeIdx = 8;
@@ -2046,12 +2448,22 @@ namespace gbpp::lsp {
                 }
             }
 
-            if (tokenTypeIdx == -1) continue;
+            if (inInactiveBlock || waitingForInactiveBrace || isClosingInactive) {
+                tokenModifier |= 8;
+            }
+
+            if (tokenTypeIdx == -1) {
+                if (inInactiveBlock || waitingForInactiveBrace || isClosingInactive) {
+                    tokenTypeIdx = 6;
+                }
+                else {
+                    continue;
+                }
+            }
 
             int line = token.loc.line - 1;
             int character = token.loc.col - 1;
             int length = token.text.length();
-
             int deltaLine = line - prevLine;
             int deltaChar = (deltaLine == 0) ? (character - prevChar) : character;
 
@@ -2074,57 +2486,58 @@ namespace gbpp::lsp {
 
     int LSPServer::getSemanticTokenType(TokenType type, const std::string& text, Sema* currentSema) {
         switch (type) {
-        case TokenType::Fn: case TokenType::Return:
-        case TokenType::Enum: case TokenType::Namespace:
-        case TokenType::If: case TokenType::Else: case TokenType::While: case TokenType::Owner: case TokenType::For:
-        case TokenType::Ref:
-            return 0;
-        case TokenType::U8: case TokenType::U16: case TokenType::U32: case TokenType::U64:
-        case TokenType::I8: case TokenType::I16: case TokenType::I32: case TokenType::I64:
-        case TokenType::F32: case TokenType::F64: case TokenType::Void:
-            return 1;
-        case TokenType::Identifier:
-            if (text == "else") return 0;
+            case TokenType::Fn: case TokenType::Return:
+            case TokenType::Enum: case TokenType::Namespace:
+            case TokenType::If: case TokenType::Else: case TokenType::While: case TokenType::Owner: case TokenType::For:
+			case TokenType::Ref: case TokenType::Continue: case TokenType::Break:
+                return 0;
+            case TokenType::U8: case TokenType::U16: case TokenType::U32: case TokenType::U64:
+            case TokenType::I8: case TokenType::I16: case TokenType::I32: case TokenType::I64:
+            case TokenType::F32: case TokenType::F64: case TokenType::Void: case TokenType::Bool:
+                return 1;
+            case TokenType::Identifier:
+                if (text == "else") return 0;
 
-            if (currentSema) {
-                if (currentSema->m_structs.count(text)) return 2;
-                if (currentSema->m_generic_structs.count(text)) return 2;
-                if (currentSema->m_enums.count(text)) return 2;
-                if (currentSema->m_aliases.count(text)) return 2;
-                if (currentSema->m_functions.count(text)) return 3;
+                if (currentSema) {
+                    if (currentSema->m_structs.count(text)) return 2;
+                    if (currentSema->m_generic_structs.count(text)) return 2;
+                    if (currentSema->m_enums.count(text)) return 2;
+                    if (currentSema->m_aliases.count(text)) return 2;
+                    if (currentSema->m_functions.count(text)) return 3;
 
-                for (const auto& [ename, enm] : currentSema->m_enums) {
-                    for (const auto& member : enm->members) {
-                        if (member.name == text) return 12;
+                    for (const auto& [ename, enm] : currentSema->m_enums) {
+                        for (const auto& member : enm->members) {
+                            if (member.name == text) return 12;
+                        }
                     }
                 }
-            }
-            return 4;
-        case TokenType::IntLiteral: case TokenType::FloatLiteral: return 5;
-        case TokenType::Plus: case TokenType::Minus: case TokenType::Star: case TokenType::Slash:
-        case TokenType::Equal: case TokenType::EqualEqual: case TokenType::NotEqual:
-        case TokenType::LT: case TokenType::GT:
-            return 6;
-        case TokenType::LBrace: case TokenType::RBrace:
-        case TokenType::LBracket: case TokenType::RBracket:
-        case TokenType::LParen: case TokenType::RParen:
-            return 6;
-        case TokenType::At: case TokenType::Const:
-        case TokenType::Cast: case TokenType::CastBits:
-        case TokenType::Null: case TokenType::Lib:
-        case TokenType::Struct: case TokenType::True:
-        case TokenType::False: case TokenType::Volatile:
-		case TokenType::Sizeof: case TokenType::Variadic:
-        case TokenType::Expand: case TokenType::Alignof:
-		case TokenType::Comptime: case TokenType::BuiltinAllocate:
-            return 8;
-        case TokenType::HashImport:
-            return 8;
-        case TokenType::Alias:
-            return 8;
-        case TokenType::StringLiteral:
-            return 7;
-        default: return -1;
+                return 4;
+            case TokenType::IntLiteral: case TokenType::FloatLiteral: return 5;
+            case TokenType::Plus: case TokenType::Minus: case TokenType::Star: case TokenType::Slash:
+            case TokenType::Equal: case TokenType::EqualEqual: case TokenType::NotEqual:
+            case TokenType::LT: case TokenType::GT:
+                return 6;
+            case TokenType::LBrace: case TokenType::RBrace:
+            case TokenType::LBracket: case TokenType::RBracket:
+            case TokenType::LParen: case TokenType::RParen:
+                return 6;
+            case TokenType::At: case TokenType::Const:
+            case TokenType::Cast: case TokenType::CastBits:
+            case TokenType::Null: case TokenType::Lib:
+            case TokenType::Struct: case TokenType::True:
+            case TokenType::False: case TokenType::Volatile:
+		    case TokenType::Sizeof: case TokenType::Variadic:
+            case TokenType::Expand: case TokenType::Alignof:
+		    case TokenType::Comptime: case TokenType::BuiltinAllocate:
+            case TokenType::Lock: case TokenType::Operator:
+                return 8;
+            case TokenType::HashImport:
+                return 8;
+            case TokenType::Alias:
+                return 8;
+            case TokenType::StringLiteral:
+                return 7;
+            default: return -1;
         }
     }
 }

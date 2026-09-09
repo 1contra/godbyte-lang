@@ -48,20 +48,23 @@ namespace gbpp {
 
     enum class MInstOpcode {
         X86_MOVrr, X86_MOVri, X86_MOVrm, X86_MOVmr, X86_MOVmi,
-        X86_MOVZX,
+        X86_MOVZX, X86_MOVSX, X86_MOVSXD,
         X86_ADDrr, X86_ADDri, X86_ADDrm, X86_ADDmr,
         X86_SUBrr, X86_SUBri, X86_SUBrm, X86_SUBmr,
+        X86_INC, X86_DEC,
         X86_IMULrr, X86_IMULrri,
-        X86_IDIVr, X86_CQO,
-        X86_ANDri, X86_ORrr, X86_ORri, X86_ORrm, X86_ORmr,
+        X86_IDIVr, X86_DIVr, X86_CQO,
+        X86_ANDrr, X86_ANDri, X86_ANDrm, X86_ANDmr,
+        X86_ORrr, X86_ORri, X86_ORrm, X86_ORmr,
         X86_XORrr, X86_XORri, X86_XORrm, X86_XORmr,
         X86_SHLr, X86_SHRr, X86_SHLcl, X86_SHRcl,
         X86_TESTrr,
         X86_CMPrr, X86_CMPri, X86_CMPrm,
-
         X86_MOVSS, X86_MOVSD,
         X86_MOVAPS, X86_MOVUPS,
-        X86_MOVDQA, X86_MOVDQU,
+        X86_MOVDQA, X86_MOVDQU, X86_VPADDQ, X86_VPSUBQ, X86_VPMULUDQ,
+        X86_VPAND, X86_VPOR, X86_VPXOR,
+        X86_VPBROADCASTQ, X86_VZEROUPPER,
         X86_ADDSS, X86_ADDSD,
         X86_SUBSS, X86_SUBSD,
         X86_MULSS, X86_MULSD,
@@ -70,7 +73,6 @@ namespace gbpp {
         X86_PMULLD, X86_XORPS,
         X86_PSHUFD,
         X86_CVTTSD2SI, X86_CVTSI2SD,
-
         X86_LEAr, X86_LEAm,
         X86_CALLpcrel, X86_CALLr,
         X86_JMP, X86_JE, X86_JNE, X86_JL, X86_JLE, X86_JG, X86_JGE,
@@ -79,8 +81,8 @@ namespace gbpp {
         X86_LEAVE, X86_RET,
         X86_LABEL,
         X86_INLINE_ASM,
-
-        X86_ANDrm, X86_ANDmr, X86_ANDrr
+        X86_CMOVE, X86_CMOVNE, X86_CMOVL, X86_CMOVLE, X86_CMOVG, X86_CMOVGE,
+        X86_BSWAP, X86_ROL8, X86_INT3, X86_UD2
     };
 
     struct MachineInstr {

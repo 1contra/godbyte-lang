@@ -47,6 +47,7 @@ namespace gbpp {
         virtual void emitExtern(const std::string& name) = 0;
         virtual void emitDataString(const std::string& label, const std::string& str) = 0;
         virtual void emitLabel(const std::string& label) = 0;
+        virtual void emitDataInteger(const std::string& label, uint64_t val, int size) = 0;
 
         virtual void emitInstruction(const MachineInstr& inst) = 0;
         virtual void finalize(std::ostream& out) = 0;

@@ -23,7 +23,7 @@ namespace gbpp {
                     }
                 }
 
-                if (inst.op == OpCode::CALL) {
+                if (inst.op == OpCode::CALL || inst.op == OpCode::DIV) {
                     callIndices.push_back(globalIdx);
                     for (size_t i = 0; i < std::min(tri.argRegs.size(), inst.args.size()); ++i) {
                         int vArg = inst.args[i];

@@ -27,6 +27,7 @@ namespace gbpp {
         BasicBlock* m_currentBlock = nullptr;
         std::vector<BasicBlock*> m_loopExits;
         std::unordered_set<std::string> m_stackPrimitives;
+        std::vector<BasicBlock*> m_loopUpdates;
 
         int m_exitLabel = -1;
         int m_retReg = -1;
@@ -37,6 +38,7 @@ namespace gbpp {
         int genExpr(const Expr& expr);
         void emit(Instruction inst);
         int getOffset(Type* type, const std::string& field);
+        int genLValue(const Expr& expr);
     };
 
 }

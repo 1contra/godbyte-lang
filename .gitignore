@@ -66,11 +66,19 @@ build/
 *.VC.db
 *.VC.VC.opendb
 
-# Visual Studio Code settings (if you also use V
-
 test-project/
 
 build/
 cmake-build*/
 
 node_modules/
+
+ir-2.cpp
+irgen-2.cpp
+ir-2.hpp
+irgen-2.hpp
+IR_REWRITE_SPEC.md
+
+*.vsix
+vulkan.lib.gbpp
+out/

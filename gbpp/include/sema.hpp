@@ -26,6 +26,7 @@ namespace gbpp {
         std::unordered_map<std::string, EnumDecl*> m_enums;
         std::unordered_map<std::string, VarDecl*> m_globalVars;
         std::map<std::string, ParsedType> m_aliases;
+        std::unordered_map<std::string, std::unordered_map<TokenType, FunctionDecl*>> m_structOperators;
 
         std::vector<std::string> errors;
 
@@ -53,7 +54,7 @@ namespace gbpp {
 
         void enterScope();
         void exitScope();
-        bool declareVariable(const std::string& name, Type* type, SourceLoc loc, const std::set<std::string>& attrs);
+        bool declareVariable(const std::string& name, Type* type, SourceLoc loc, const std::vector<Attribute>& attrs);
         bool declareVariable(const std::string& name, Type* type, SourceLoc loc);
         Type* lookupVariable(const std::string& name);
 

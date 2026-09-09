@@ -18,6 +18,7 @@ namespace gbpp {
         Pointer,
         FunctionPtr,
         Struct,
+        Union,
         Unknown
     };
 }

@@ -8,6 +8,35 @@
 
 namespace gbpp {
 
+    enum class AttrKind {
+        Unknown,
+        Addr,
+        Deprecated,
+        Section,
+        Inline,
+        Export,
+        Extern,
+        Config,
+        Nofree,
+        Lockable,
+        Locked,
+        Free
+    };
+
+    struct Attribute {
+        AttrKind kind;
+        std::string rawName;
+        std::vector<std::string> args;
+        std::string blockBody;
+    };
+
+    inline bool hasAttribute(const std::vector<Attribute>& attrs, AttrKind kind) {
+        for (const auto& a : attrs) {
+            if (a.kind == kind) return true;
+        }
+        return false;
+    }
+
     enum class TypeModifier { None, Owner, Ref, Volatile, Const };
 
     struct ParsedType {
@@ -17,6 +46,10 @@ namespace gbpp {
         std::string arraySizeExpr = "";
 
         bool isFunction = false;
+        bool isVariadicFunc = false;
+
+        bool isUnion = false;
+        std::vector<ParsedType> unionTypes;
         std::vector<ParsedType> paramTypes;
         std::shared_ptr<ParsedType> returnType;
         std::vector<ParsedType> genericArgs;
@@ -29,6 +62,15 @@ namespace gbpp {
         };
 
         std::string toString() const {
+            if (isUnion) {
+                std::string res;
+                for (size_t i = 0; i < unionTypes.size(); ++i) {
+                    res += unionTypes[i].toString();
+                    if (i < unionTypes.size() - 1) res += " | ";
+                }
+                return res;
+            }
+
             if (isFunction) {
                 std::string res = "fn(";
                 for (size_t i = 0; i < paramTypes.size(); ++i) {
@@ -97,9 +139,19 @@ namespace gbpp {
         bool resultValue = false;
     };
 
-    struct BuiltinAllocateExpr : Expr {
-        std::unique_ptr<Expr> sizeExpr;
-        std::unique_ptr<Expr> alignExpr;
+    struct BuiltinCallExpr : Expr {
+        TokenType builtinType;
+        std::vector<std::unique_ptr<Expr>> args;
+    };
+
+    struct LockExpr : Expr {
+        std::unique_ptr<Expr> operand;
+    };
+
+    struct ComptimeIfExpr : Expr {
+        std::unique_ptr<Expr> condition;
+        std::unique_ptr<Expr> thenExpr;
+        std::unique_ptr<Expr> elseExpr;
     };
 
     struct DerefExpr : Expr {
@@ -109,6 +161,7 @@ namespace gbpp {
     struct ArrayAccessExpr : Expr {
         std::unique_ptr<Expr> array;
         std::unique_ptr<Expr> index;
+        std::unique_ptr<Expr> overloadedCall;
     };
 
     struct CallExpr : Expr {
@@ -158,6 +211,7 @@ namespace gbpp {
         std::unique_ptr<Expr> left;
         TokenType op;
         std::unique_ptr<Expr> right;
+        std::unique_ptr<Expr> overloadedCall;
     };
 
     struct Stmt : ASTNode {};
@@ -173,7 +227,7 @@ namespace gbpp {
         ParsedType parsedType;
         Type* resolvedType = nullptr;
         std::unique_ptr<Expr> initializer;
-        std::set<std::string> attributes;
+        std::vector<Attribute> attributes;
     };
 
     struct AddrOfExpr : Expr {
@@ -211,12 +265,17 @@ namespace gbpp {
 
     struct FunctionDecl : ASTNode {
         std::vector<GenericParam> genericParams;
-        std::set<std::string> attributes;
+        std::vector<Attribute> attributes;
         std::string name;
+        bool isVariadic = false;
+        bool isOperator = false;
+        TokenType operatorKind = TokenType::EndOfFile;
+        std::string parentStructName = "";
         struct Param {
             std::string name;
             ParsedType parsedType;
             Type* resolvedType = nullptr;
+            std::vector<Attribute> attributes;
         };
         std::vector<Param> params;
         ParsedType returnType;
@@ -232,16 +291,25 @@ namespace gbpp {
 
     struct StructDecl : ASTNode {
         std::vector<GenericParam> genericParams;
-        std::set<std::string> attributes;
+        std::vector<Attribute> attributes;
         std::string name;
-        struct Field { std::string name; ParsedType parsedType; int offset; };
+        struct Field {
+            std::string name;
+            ParsedType parsedType;
+            int offset;
+            std::vector<Attribute> attributes;
+        };
         std::vector<Field> fields;
         std::vector<std::unique_ptr<FunctionDecl>> methods;
     };
 
     struct EnumDecl : ASTNode {
-        std::set<std::string> attributes;
+        std::vector<Attribute> attributes;
         std::string name;
+
+        ParsedType underlyingType;
+        Type* resolvedType = nullptr;
+
         struct EnumMember { std::string name; uint64_t value; };
         std::vector<EnumMember> members;
     };
@@ -253,12 +321,13 @@ namespace gbpp {
     };
 
     struct AliasDecl : ASTNode {
-        std::set<std::string> attributes;
+        std::vector<Attribute> attributes;
         std::string name;
         ParsedType targetType;
     };
 
     struct BreakStmt : Stmt {};
+    struct ContinueStmt : Stmt {};
 
     struct SelfFieldExpr : Expr {
         std::string fieldName;

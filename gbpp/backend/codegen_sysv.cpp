@@ -75,7 +75,7 @@ namespace gbpp {
             auto getBlock = [&](const std::string& name) -> const MIRBasicBlock* {
                 for (const auto& b : mirFn.blocks) if (b.name == name) return &b;
                 return nullptr;
-                };
+            };
 
             while (!worklist.empty()) {
                 std::string curr = worklist.back();
@@ -110,14 +110,13 @@ namespace gbpp {
 
             mirFn.blocks.erase(std::remove_if(mirFn.blocks.begin(), mirFn.blocks.end(), [&](const MIRBasicBlock& b) {
                 return reachable.find(b.name) == reachable.end();
-                }), mirFn.blocks.end());
+            }), mirFn.blocks.end());
         }
 
         const int REG_RAX = 0; const int REG_RCX = 1; const int REG_RDX = 2; const int REG_RBX = 3;
-        const int REG_RSI = 4; const int REG_RDI = 5; const int REG_R8 = 6; const int REG_R9 = 7;
-        const int REG_R10 = 8; const int REG_R11 = 9; const int REG_R12 = 10; const int REG_R13 = 11;
-        const int REG_R14 = 12; const int REG_R15 = 13;
-        const int REG_RBP = 14; const int REG_RSP = 15;
+        const int REG_RSP = 4; const int REG_RBP = 5; const int REG_RSI = 6; const int REG_RDI = 7;
+        const int REG_R8 = 8; const int REG_R9 = 9; const int REG_R10 = 10; const int REG_R11 = 11;
+        const int REG_R12 = 12; const int REG_R13 = 13; const int REG_R14 = 14; const int REG_R15 = 15;
     }
 
     class CodeGenSystemV : public CodeGen {
@@ -155,18 +154,34 @@ namespace gbpp {
                 }
             }
 
-            if (!mod.readOnlyStrings.empty()) {
+            if (!mod.readOnlyStrings.empty() || !mod.globals.empty()) {
                 emitter.enterDataSection();
                 for (size_t i = 0; i < mod.readOnlyStrings.size(); ++i) {
                     emitter.emitDataString("str_" + std::to_string(i), mod.readOnlyStrings[i]);
+                }
+                for (const auto& g : mod.globals) {
+                    emitter.emitDataInteger(sanitizeLabel(g.name), g.initVal, g.size);
                 }
             }
 
             emitter.enterTextSection();
             for (const auto& fn : mod.functions) {
                 if (!fn.blocks.empty()) {
-                    emitter.emitGlobal(sanitizeLabel(fn.name));
+                    std::string actualName = fn.name;
+                    if (actualName.starts_with(".sec$")) {
+                        size_t pos = actualName.find('$', 5);
+                        if (pos != std::string::npos) actualName = actualName.substr(pos + 1);
+                    }
+                    if (actualName.find("__standalone_") == std::string::npos) {
+                        emitter.emitGlobal(sanitizeLabel(actualName));
+                    }
                 }
+            }
+            for (auto& fn : mod.functions) {
+                if (fn.name.find("__standalone_") == std::string::npos && fn.name.find(".sec$") == std::string::npos) {
+                    emitter.enterTextSection();
+                }
+                genFunction(fn, emitter);
             }
 
             for (auto& fn : mod.functions) genFunction(fn, emitter);
@@ -442,30 +457,44 @@ namespace gbpp {
                             if (writes) return true;
                         }
                         return true;
-                        };
+                    };
 
                     for (size_t i = 0; i < block.insts.size(); ++i) {
                         auto& inst = block.insts[i];
-
+                        if (inst.opcode == MInstOpcode::X86_ADDri && inst.operands.size() > 1 && inst.operands[1].imm == 1) {
+                            MachineInstr incInst;
+                            incInst.opcode = MInstOpcode::X86_INC;
+                            incInst.operands.push_back(inst.operands[0]);
+                            newInsts.push_back(incInst);
+                            changed = true;
+                            continue;
+                        }
+                        if (inst.opcode == MInstOpcode::X86_SUBri && inst.operands.size() > 1 && inst.operands[1].imm == 1) {
+                            MachineInstr decInst;
+                            decInst.opcode = MInstOpcode::X86_DEC;
+                            decInst.operands.push_back(inst.operands[0]);
+                            newInsts.push_back(decInst);
+                            changed = true;
+                            continue;
+                        }
                         if (inst.opcode == MInstOpcode::X86_MOVrr && inst.operands[0].reg == inst.operands[1].reg) {
                             changed = true;
                             continue;
                         }
-
                         if (inst.opcode == MInstOpcode::X86_LEAr && i + 1 < block.insts.size()) {
                             auto& next = block.insts[i + 1];
                             if (next.opcode == MInstOpcode::X86_MOVrr &&
                                 inst.operands[1].isMem() &&
                                 next.operands[0].reg == inst.operands[1].mem.baseReg &&
                                 next.operands[1].reg == inst.operands[0].reg) {
-
-                                MachineInstr addInst;
-                                addInst.opcode = MInstOpcode::X86_ADDri;
-                                addInst.operands.push_back(next.operands[0]);
-                                addInst.operands.push_back(MachineOperand::createImm(inst.operands[1].mem.offset, next.operands[0].size));
-
-                                newInsts.push_back(addInst);
-                                i++; changed = true; continue;
+                                if (isSafeToFold(inst.operands[0].reg, i + 2)) {
+                                    MachineInstr addInst;
+                                    addInst.opcode = MInstOpcode::X86_ADDri;
+                                    addInst.operands.push_back(next.operands[0]);
+                                    addInst.operands.push_back(MachineOperand::createImm(inst.operands[1].mem.offset, next.operands[0].size));
+                                    newInsts.push_back(addInst);
+                                    i++; changed = true; continue;
+                                }
                             }
                         }
 
@@ -487,15 +516,14 @@ namespace gbpp {
                                     inst.operands[0].size == math.operands[0].size) {
 
                                     int r4 = movBack.operands[0].reg;
-
-                                    if (r4 == r2) {
-                                        MachineInstr directMath = math;
-                                        directMath.operands[0] = movBack.operands[0];
-                                        newInsts.push_back(directMath);
-                                        i += 2; changed = true; continue;
-                                    }
-
                                     if (isSafeToFold(r1, i + 3)) {
+                                        if (r4 == r2) {
+                                            MachineInstr directMath = math;
+                                            directMath.operands[0] = movBack.operands[0];
+                                            newInsts.push_back(directMath);
+                                            i += 2; changed = true; continue;
+                                        }
+
                                         if (isMathReg) {
                                             int r3 = math.operands[1].reg;
 
@@ -602,7 +630,28 @@ namespace gbpp {
             if (fn.blocks.empty()) {
                 return;
             }
-
+            std::string actualName = fn.name;
+            std::string sectionDirective = "";
+            if (actualName.starts_with(".sec$")) {
+                size_t pos = actualName.find('$', 5);
+                if (pos != std::string::npos) {
+                    sectionDirective = actualName.substr(5, pos - 5);
+                    actualName = actualName.substr(pos + 1);
+                }
+            }
+            if (!sectionDirective.empty()) {
+                emitter.emitInstruction({ MInstOpcode::X86_INLINE_ASM, { MachineOperand::createLabel("section " + sectionDirective) } });
+            }
+            if (actualName.find("__standalone_") != std::string::npos) {
+                for (const auto& block : fn.blocks) {
+                    for (const auto& inst : block->instructions) {
+                        if (inst.op == OpCode::INLINE_ASM) {
+                            emitter.emitInstruction({ MInstOpcode::X86_INLINE_ASM, { MachineOperand::createLabel(inst.label) } });
+                        }
+                    }
+                }
+                return;
+            }
             TargetRegisterInfo tri;
             tri.argRegs = argRegs;
             tri.returnReg = REG_RAX;
@@ -615,6 +664,7 @@ namespace gbpp {
             MIRFunction mirFn;
             mirFn.name = fn.name;
 
+            bool usesAVX = false;
             bool hasCall = false;
             bool hasAlloc = false;
             bool hasStackArgs = false;
@@ -625,13 +675,14 @@ namespace gbpp {
             std::set<int> usedAsReg;
             std::map<int, int> defCounts;
             std::map<int, int> useCounts;
-
+            std::set<int> condRegsForSelect;
             for (const auto& block : fn.blocks) {
                 for (const auto& inst : block->instructions) {
                     if (inst.dest != -1) defCounts[inst.dest]++;
                     if (inst.src1 != -1) useCounts[inst.src1]++;
                     if (inst.src2 != -1) useCounts[inst.src2]++;
                     for (int arg : inst.args) if (arg != -1) useCounts[arg]++;
+                    if (inst.op == OpCode::SELECT) condRegsForSelect.insert(inst.src1);
                 }
             }
 
@@ -701,7 +752,7 @@ namespace gbpp {
             std::map<int, const Instruction*> foldLoads;
             for (const auto& block : fn.blocks) {
                 for (const auto& inst : block->instructions) {
-                    if (inst.op == OpCode::TRUNC || inst.op == OpCode::CAST || inst.op == OpCode::ZEXT) {
+                    if (inst.op == OpCode::TRUNC || inst.op == OpCode::CAST || inst.op == OpCode::ZEXT || inst.op == OpCode::SEXT) {
                         int srcReg = inst.src1;
                         if (defs.count(srcReg) && useCounts[srcReg] == 1) {
                             const Instruction* defInst = defs[srcReg];
@@ -717,10 +768,11 @@ namespace gbpp {
             for (const auto& block : fn.blocks) {
                 for (const auto& inst : block->instructions) {
                     if (inst.op == OpCode::STORE) {
+                        if (inst.src1 != -1) allocUses[inst.src1]++;
                         if (inst.src2 != -1) allocUses[inst.src2]++;
                     }
                     else if (inst.op == OpCode::LOAD) {
-
+                        if (inst.src1 != -1) allocUses[inst.src1]++;
                     }
                     else if (inst.op == OpCode::ADD) {
                         if (inst.dest != -1 && foldOffsets.count(inst.dest)) {
@@ -953,28 +1005,24 @@ namespace gbpp {
                         }
                         case OpCode::CAST:
                         case OpCode::ZEXT:
+                        case OpCode::SEXT:
                         case OpCode::TRUNC: {
                             int srcSize = (inst.imm > 0 && inst.imm <= 8) ? inst.imm : 8;
                             MachineOperand dst = resolveOp(inst.dest, inst.bytes);
                             MachineOperand src;
-
                             if (foldLoads.count(inst.src1)) {
                                 const Instruction* loadInst = foldLoads[inst.src1];
                                 int baseReg = loadInst->src1;
                                 int offset = 0;
-
                                 if (foldOffsets.count(baseReg)) {
                                     offset = foldOffsets[baseReg].second;
                                     baseReg = foldOffsets[baseReg].first;
                                 }
-
                                 MachineOperand baseOp = resolveOp(baseReg, 8);
                                 int loadSize = loadInst->bytes;
-
                                 if (inst.op == OpCode::TRUNC || (inst.op == OpCode::CAST && dst.size < loadSize)) {
                                     loadSize = dst.size;
                                 }
-
                                 if (baseOp.isMem()) {
                                     auto r11 = MachineOperand::createReg(REG_R11, 8);
                                     mb.insts.push_back({ MInstOpcode::X86_MOVrm, { r11, baseOp } });
@@ -995,8 +1043,28 @@ namespace gbpp {
                                     src.size = dst.size;
                                 }
                             }
-
-                            if (inst.op == OpCode::ZEXT || (inst.op == OpCode::CAST && dst.size > src.size)) {
+                            if (inst.op == OpCode::SEXT) {
+                                if (src.isImm()) {
+                                    int64_t val = src.imm;
+                                    if (src.size == 1) val = (int8_t)val;
+                                    else if (src.size == 2) val = (int16_t)val;
+                                    else if (src.size == 4) val = (int32_t)val;
+                                    src.imm = val;
+                                    src.size = dst.size;
+                                    emitLirMov(mb.insts, dst, src);
+                                }
+                                else if (src.size == 4 && dst.size == 8) {
+                                    mb.insts.push_back({ MInstOpcode::X86_MOVSXD, { dst, src } });
+                                }
+                                else if (src.size < 4) {
+                                    MachineOperand extDst = MachineOperand::createReg(dst.reg, std::max(4, dst.size));
+                                    mb.insts.push_back({ MInstOpcode::X86_MOVSX, { extDst, src } });
+                                }
+                                else {
+                                    emitLirMov(mb.insts, dst, src);
+                                }
+                            }
+                            else if (inst.op == OpCode::ZEXT || (inst.op == OpCode::CAST && dst.size > src.size)) {
                                 if (src.isImm()) {
                                     src.size = dst.size;
                                     emitLirMov(mb.insts, dst, src);
@@ -1106,23 +1174,52 @@ namespace gbpp {
                             }
                             break;
                         }
-                        case OpCode::DIV: {
+                        case OpCode::DIV:
+                        case OpCode::UDIV:
+                        case OpCode::MOD:
+                        case OpCode::UMOD: {
+                            if (alloc.callSpills.count(globalIdx)) {
+                                for (int vReg : alloc.callSpills[globalIdx]) {
+                                    MachineOperand reg = resolveOp(vReg, 8);
+                                    MachineOperand mem = createFrameMem(-(calleeSavedSpace + (maxLocals * 8) + alloc.spills[vReg]), 8);
+                                    emitLirMov(mb.insts, mem, reg);
+                                }
+                            }
                             auto src1 = resolveOp(inst.src1, inst.bytes);
                             auto src2 = resolveOp(inst.src2, inst.bytes);
+                            MachineOperand safeSrc2 = src2;
+                            if (src2.isReg() && (src2.reg == REG_RAX || src2.reg == REG_RDX)) {
+                                safeSrc2 = MachineOperand::createReg(REG_R8, inst.bytes);
+                                emitLirMov(mb.insts, safeSrc2, src2);
+                            }
+                            else if (src2.isImm()) {
+                                safeSrc2 = MachineOperand::createReg(REG_R8, inst.bytes);
+                                emitLirMov(mb.insts, safeSrc2, src2);
+                            }
                             auto rax = MachineOperand::createReg(REG_RAX, inst.bytes);
-
                             emitLirMov(mb.insts, rax, src1);
-                            mb.insts.push_back({ MInstOpcode::X86_CQO, {} });
-
-                            if (src2.isImm()) {
-                                auto r10 = MachineOperand::createReg(REG_R10, inst.bytes);
-                                emitLirMov(mb.insts, r10, src2);
-                                mb.insts.push_back({ MInstOpcode::X86_IDIVr, { r10 } });
+                            if (inst.op == OpCode::DIV || inst.op == OpCode::MOD) {
+                                mb.insts.push_back({ MInstOpcode::X86_CQO, {} });
+                                mb.insts.push_back({ MInstOpcode::X86_IDIVr, { safeSrc2 } });
                             }
                             else {
-                                mb.insts.push_back({ MInstOpcode::X86_IDIVr, { src2 } });
+                                auto rdx = MachineOperand::createReg(REG_RDX, inst.bytes);
+                                mb.insts.push_back({ MInstOpcode::X86_XORrr, { rdx, rdx } });
+                                mb.insts.push_back({ MInstOpcode::X86_DIVr, { safeSrc2 } });
                             }
-                            emitLirMov(mb.insts, resolveOp(inst.dest, inst.bytes), rax);
+                            if (inst.op == OpCode::DIV || inst.op == OpCode::UDIV) {
+                                emitLirMov(mb.insts, resolveOp(inst.dest, inst.bytes), rax);
+                            }
+                            else {
+                                emitLirMov(mb.insts, resolveOp(inst.dest, inst.bytes), MachineOperand::createReg(REG_RDX, inst.bytes));
+                            }
+                            if (alloc.callSpills.count(globalIdx)) {
+                                for (int vReg : alloc.callSpills[globalIdx]) {
+                                    MachineOperand reg = resolveOp(vReg, 8);
+                                    MachineOperand mem = createFrameMem(-(calleeSavedSpace + (maxLocals * 8) + alloc.spills[vReg]), 8);
+                                    emitLirMov(mb.insts, reg, mem);
+                                }
+                            }
                             break;
                         }
                         case OpCode::SHL:
@@ -1150,6 +1247,10 @@ namespace gbpp {
                         case OpCode::CMP_GT:
                         case OpCode::CMP_LE:
                         case OpCode::CMP_GE: {
+                            bool onlyUsedBySelect = (inst.dest != -1 && condRegsForSelect.count(inst.dest) && useCounts[inst.dest] == 1);
+                            if (onlyUsedBySelect) {
+                                break;
+                            }
                             int opSize = 8;
                             if (defs.count(inst.src1)) {
                                 opSize = defs[inst.src1]->bytes;
@@ -1324,7 +1425,10 @@ namespace gbpp {
                                     }
 
                                     MachineOperand scratchOp = MachineOperand::createReg(chosenScratch, 8);
-                                    mb.insts.push_back({ MInstOpcode::X86_MOVrr, { scratchOp, MachineOperand::createReg(targetReg, 8) } });
+                                    mb.insts.push_back({ MInstOpcode::X86_XORrr, { MachineOperand::createReg(REG_RAX, 8), MachineOperand::createReg(REG_RAX, 8) } });
+
+                                    if (!inst.label.empty()) mb.insts.push_back({ MInstOpcode::X86_CALLpcrel, { MachineOperand::createLabel(inst.label) } });
+                                    else mb.insts.push_back({ MInstOpcode::X86_CALLr, { callTarget } });
 
                                     for (size_t j = i + 1; j < std::min((size_t)6, inst.args.size()); ++j) {
                                         if (argSrcs[j].isReg() && argSrcs[j].reg == targetReg) argSrcs[j].reg = chosenScratch;
@@ -1364,6 +1468,10 @@ namespace gbpp {
                                 emitLirMov(mb.insts, MachineOperand::createReg(REG_RAX, 8), resolveSrc(inst.src1, 8));
                             }
 
+                            if (usesAVX) {
+                                mb.insts.push_back({ MInstOpcode::X86_VZEROUPPER, {} });
+                            }
+
                             if (needsRBP) {
                                 if (calleeSavedSpace > 0) {
                                     MachineOperand mem = MachineOperand::createMem(REG_RBP, -calleeSavedSpace, 8);
@@ -1388,6 +1496,165 @@ namespace gbpp {
                             }
 
                             mb.insts.push_back({ MInstOpcode::X86_RET, {} });
+                            break;
+                        }
+                        case OpCode::VADD256: {
+                            MachineOperand dst = resolveOp(inst.dest, 32);
+                            MachineOperand src1 = resolveOp(inst.src1, 32);
+                            MachineOperand src2 = resolveOp(inst.src2, 32);
+                            mb.insts.push_back({ MInstOpcode::X86_VPADDQ, { dst, src1, src2 } });
+                            usesAVX = true;
+                            break;
+                        }
+                        case OpCode::VLOAD256: {
+                            MachineOperand dst = resolveOp(inst.dest, 32);
+                            MachineOperand srcMem = MachineOperand::createMem(resolveOp(inst.src1, 8).reg, 0, 32);
+                            mb.insts.push_back({ MInstOpcode::X86_MOVDQU, { dst, srcMem } });
+                            usesAVX = true;
+                            break;
+                        }
+                        case OpCode::VSTORE256: {
+                            MachineOperand dstMem = MachineOperand::createMem(resolveOp(inst.src1, 8).reg, 0, 32);
+                            MachineOperand src = resolveOp(inst.src2, 32);
+                            mb.insts.push_back({ MInstOpcode::X86_MOVDQU, { dstMem, src } });
+                            usesAVX = true;
+                            break;
+                        }
+                        case OpCode::VPBROADCASTQ: {
+                            MachineOperand dst = resolveOp(inst.dest, 32);
+                            MachineOperand src = resolveOp(inst.src1, 8);
+                            if (src.isImm() || src.isMem()) {
+                                MachineOperand r10 = MachineOperand::createReg(REG_R10, 8);
+                                if (src.isImm()) {
+                                    mb.insts.push_back({ MInstOpcode::X86_MOVri, { r10, src } });
+                                }
+                                else {
+                                    mb.insts.push_back({ MInstOpcode::X86_MOVrm, { r10, src } });
+                                }
+                                src = r10;
+                            }
+                            mb.insts.push_back({ MInstOpcode::X86_VPBROADCASTQ, { dst, src } });
+                            usesAVX = true;
+                            break;
+                        }
+                        case OpCode::SELECT: {
+                            MachineOperand dst = resolveOp(inst.dest, inst.bytes);
+                            MachineOperand cond = resolveOp(inst.src1, 1);
+                            MachineOperand trueVal = resolveOp(inst.src2, inst.bytes);
+                            MachineOperand falseVal = resolveSrc(inst.args[0], inst.bytes);
+                            emitLirMov(mb.insts, dst, falseVal);
+                            MachineOperand trueReg = trueVal;
+                            if (trueVal.isImm()) {
+                                MachineOperand r11 = MachineOperand::createReg(REG_R11, inst.bytes);
+                                mb.insts.push_back({ MInstOpcode::X86_MOVri, { r11, trueVal } });
+                                trueReg = r11;
+                            }
+                            bool isCmp = false;
+                            const Instruction* condDef = nullptr;
+                            if (inst.src1 != -1 && defs.count(inst.src1)) {
+                                condDef = defs[inst.src1];
+                                if (condDef->op >= OpCode::CMP_EQ && condDef->op <= OpCode::CMP_GE) {
+                                    isCmp = true;
+                                }
+                            }
+                            if (isCmp) {
+                                int opSize = 8;
+                                if (condDef->src1 != -1 && defs.count(condDef->src1)) {
+                                    opSize = defs[condDef->src1]->bytes;
+                                }
+                                auto left = resolveOp(condDef->src1, opSize);
+                                auto right = condDef->src2 == -1 ? MachineOperand::createImm(condDef->imm, opSize) : resolveOp(condDef->src2, opSize);
+                                if (left.isMem() || left.isImm()) {
+                                    auto r10 = MachineOperand::createReg(REG_R10, opSize);
+                                    if (left.isImm()) mb.insts.push_back({ MInstOpcode::X86_MOVri, { r10, left } });
+                                    else mb.insts.push_back({ MInstOpcode::X86_MOVrm, { r10, left } });
+                                    left = r10;
+                                }
+                                if (right.isImm()) mb.insts.push_back({ MInstOpcode::X86_CMPri, { left, right } });
+                                else if (right.isMem()) mb.insts.push_back({ MInstOpcode::X86_CMPrm, { left, right } });
+                                else mb.insts.push_back({ MInstOpcode::X86_CMPrr, { left, right } });
+                                MInstOpcode cmovOp;
+                                switch (condDef->op) {
+                                case OpCode::CMP_EQ: cmovOp = MInstOpcode::X86_CMOVE; break;
+                                case OpCode::CMP_NE: cmovOp = MInstOpcode::X86_CMOVNE; break;
+                                case OpCode::CMP_LT: cmovOp = MInstOpcode::X86_CMOVL; break;
+                                case OpCode::CMP_GT: cmovOp = MInstOpcode::X86_CMOVG; break;
+                                case OpCode::CMP_LE: cmovOp = MInstOpcode::X86_CMOVLE; break;
+                                case OpCode::CMP_GE: cmovOp = MInstOpcode::X86_CMOVGE; break;
+                                default: cmovOp = MInstOpcode::X86_CMOVNE; break;
+                                }
+                                mb.insts.push_back({ cmovOp, { dst, trueReg } });
+                            }
+                            else {
+                                MachineOperand r10 = MachineOperand::createReg(REG_R10, std::max(4, cond.size));
+                                if (cond.isImm()) mb.insts.push_back({ MInstOpcode::X86_MOVri, { r10, cond } });
+                                else if (cond.isMem()) mb.insts.push_back({ MInstOpcode::X86_MOVrm, { r10, cond } });
+                                else mb.insts.push_back({ MInstOpcode::X86_MOVrr, { r10, cond } });
+                                mb.insts.push_back({ MInstOpcode::X86_TESTrr, { r10, r10 } });
+                                mb.insts.push_back({ MInstOpcode::X86_CMOVNE, { dst, trueReg } });
+                            }
+                            break;
+                        }
+                        case OpCode::VSUB256: {
+                            MachineOperand dst = resolveOp(inst.dest, 32);
+                            MachineOperand src1 = resolveOp(inst.src1, 32);
+                            MachineOperand src2 = resolveOp(inst.src2, 32);
+                            mb.insts.push_back({ MInstOpcode::X86_VPSUBQ, { dst, src1, src2 } });
+                            usesAVX = true;
+                            break;
+                        }
+                        case OpCode::VMUL256: {
+                            MachineOperand dst = resolveOp(inst.dest, 32);
+                            MachineOperand src1 = resolveOp(inst.src1, 32);
+                            MachineOperand src2 = resolveOp(inst.src2, 32);
+                            mb.insts.push_back({ MInstOpcode::X86_VPMULUDQ, { dst, src1, src2 } });
+                            usesAVX = true;
+                            break;
+                        }
+                        case OpCode::VAND256: {
+                            MachineOperand dst = resolveOp(inst.dest, 32);
+                            MachineOperand src1 = resolveOp(inst.src1, 32);
+                            MachineOperand src2 = resolveOp(inst.src2, 32);
+                            mb.insts.push_back({ MInstOpcode::X86_VPAND, { dst, src1, src2 } });
+                            usesAVX = true;
+                            break;
+                        }
+                        case OpCode::VOR256: {
+                            MachineOperand dst = resolveOp(inst.dest, 32);
+                            MachineOperand src1 = resolveOp(inst.src1, 32);
+                            MachineOperand src2 = resolveOp(inst.src2, 32);
+                            mb.insts.push_back({ MInstOpcode::X86_VPOR, { dst, src1, src2 } });
+                            usesAVX = true;
+                            break;
+                        }
+                        case OpCode::VXOR256: {
+                            MachineOperand dst = resolveOp(inst.dest, 32);
+                            MachineOperand src1 = resolveOp(inst.src1, 32);
+                            MachineOperand src2 = resolveOp(inst.src2, 32);
+                            mb.insts.push_back({ MInstOpcode::X86_VPXOR, { dst, src1, src2 } });
+                            usesAVX = true;
+                            break;
+                        }
+                        case OpCode::TRAP: {
+                            mb.insts.push_back({ MInstOpcode::X86_INT3, {} });
+                            break;
+                        }
+                        case OpCode::UNREACHABLE: {
+                            mb.insts.push_back({ MInstOpcode::X86_UD2, {} });
+                            break;
+                        }
+                        case OpCode::BSWAP: {
+                            MachineOperand dst = resolveOp(inst.dest, inst.bytes);
+                            MachineOperand src = resolveSrc(inst.src1, inst.bytes);
+
+                            emitLirMov(mb.insts, dst, src);
+
+                            if (inst.bytes == 2) {
+                                mb.insts.push_back({ MInstOpcode::X86_ROL8, { dst } });
+                            }
+                            else {
+                                mb.insts.push_back({ MInstOpcode::X86_BSWAP, { dst } });
+                            }
                             break;
                         }
                         default: break;

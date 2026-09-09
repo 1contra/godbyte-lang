@@ -1,5 +1,6 @@
 const vscode = require('vscode');
 const { LanguageClient } = require('vscode-languageclient/node');
+const path = require('path');
 
 let client;
 
@@ -33,7 +34,8 @@ const irHoverDocs = {
 };
 
 function activate(context) {
-    const serverOptions = { command: "gbpp-lsp.exe" };
+    const serverPath = context.asAbsolutePath('gbpp-lsp.exe');
+    const serverOptions = { command: serverPath };
     const clientOptions = { documentSelector: [{ scheme: 'file', language: 'gbpp' }] };
 
     client = new LanguageClient(

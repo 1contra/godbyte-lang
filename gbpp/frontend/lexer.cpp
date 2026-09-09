@@ -76,12 +76,21 @@ namespace gbpp {
         static const std::unordered_map<std::string, TokenType> keywords = {
             {"namespace", TokenType::Namespace},
             {"comptime", TokenType::Comptime},
+            {"lock", TokenType::Lock},
             {"__builtin_allocate", TokenType::BuiltinAllocate},
+            {"__builtin_memfill", TokenType::BuiltinMemfill},
+            {"__builtin_memcpy", TokenType::BuiltinMemcpy},
+            {"__builtin_trap", TokenType::BuiltinTrap},
+            {"__builtin_bswap16", TokenType::BuiltinBswap},
+            {"__builtin_bswap32", TokenType::BuiltinBswap},
+            {"__builtin_bswap64", TokenType::BuiltinBswap},
+            {"__builtin_unreachable", TokenType::BuiltinUnreachable},
             {"compiler", TokenType::Compiler},
             {"variadic", TokenType::Variadic},
             {"expand", TokenType::Expand},
             {"alignof", TokenType::Alignof},
             {"break", TokenType::Break},
+            {"continue", TokenType::Continue},
             {"fn", TokenType::Fn},
             {"asm", TokenType::Asm},
             {"lib", TokenType::Lib},
@@ -89,8 +98,9 @@ namespace gbpp {
             {"struct", TokenType::Struct},
             {"enum", TokenType::Enum},
             {"alias", TokenType::Alias},
+            {"operator", TokenType::Operator},
             {"sizeof", TokenType::Sizeof},
-            {"owner", TokenType::Owner},
+            {"heap", TokenType::Owner},
             {"ref", TokenType::Ref},
             {"null", TokenType::Null},
             {"if", TokenType::If},
@@ -176,9 +186,9 @@ namespace gbpp {
                         advance();
                         std::string asmCode;
                         while (!isAtEnd() && braceDepth > 0) {
-                            char c = peek();
-                            if (c == '{') braceDepth++;
-                            else if (c == '}') braceDepth--;
+                            char asmChar = peek();
+                            if (asmChar == '{') braceDepth++;
+                            else if (asmChar == '}') braceDepth--;
 
                             if (braceDepth > 0) {
                                 asmCode += advance();
@@ -218,6 +228,7 @@ namespace gbpp {
             case '-':
                 if (match('-')) tokens.push_back({ TokenType::MinusMinus, "--", startLoc });
                 else if (match('=')) tokens.push_back({ TokenType::MinusEqual, "-=", startLoc });
+                else if (match('>')) tokens.push_back({ TokenType::Arrow, "->", startLoc });
                 else tokens.push_back({ TokenType::Minus, "-", startLoc });
                 break;
             case '*':
@@ -268,10 +279,23 @@ namespace gbpp {
                 break;
             case '"': {
                 int startPos = m_pos;
+                std::string str;
                 while (peek() != '"' && !isAtEnd()) {
-                    advance();
+                    if (peek() == '\\') {
+                        advance();
+                        char escape = advance();
+                        if (escape == 'n') str += '\n';
+                        else if (escape == 'r') str += '\r';
+                        else if (escape == 't') str += '\t';
+                        else if (escape == '0') str += '\0';
+                        else if (escape == '\\') str += '\\';
+                        else if (escape == '"') str += '"';
+                        else str += escape;
+                    }
+                    else {
+                        str += advance();
+                    }
                 }
-                std::string str = m_src.substr(startPos, m_pos - startPos);
                 if (!isAtEnd()) advance();
                 tokens.push_back({ TokenType::StringLiteral, str, startLoc });
                 break;
