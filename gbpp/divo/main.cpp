@@ -260,6 +260,7 @@ void cmdBuild(int argc, char* argv[]) {
     std::string targetName = config.activeTarget;
     bool dumpIr = false;
     bool dumpAsm = false;
+    bool dumpDebug = false;
     bool enableOpt = false;
     bool tinyBuild = false;
     std::string customLinkArgs = "";
@@ -269,6 +270,7 @@ void cmdBuild(int argc, char* argv[]) {
         if (arg.starts_with("--target=")) targetName = arg.substr(9);
         else if (arg == "--ir=true" || arg == "--ir") dumpIr = true;
         else if (arg == "--asm=true" || arg == "--asm") dumpAsm = true;
+        else if (arg == "--debug" || arg == "--db") dumpDebug = true;
         else if (arg == "--opt=true" || arg == "-O") enableOpt = true;
         else if (arg == "--tiny") tinyBuild = true;
         else if (arg.starts_with("--link-args=")) customLinkArgs = arg.substr(12);
@@ -415,6 +417,17 @@ void cmdBuild(int argc, char* argv[]) {
             asmEmitter->finalize(asmFile);
         }
 
+        if (dumpDebug) {
+            std::string debugDir = targetBase + "/debug";
+            fs::create_directories(debugDir);
+            std::string debugPath = debugDir + "/" + config.projectName + ".asm";
+            std::ofstream debugFile(debugPath);
+            auto debugEmitter = gbpp::Emitter::createDebugDump();
+            codegen->generate(irModule, *debugEmitter);
+            debugEmitter->finalize(debugFile);
+            divo::print_item("Dumped extended debug image -> " + debugPath);
+        }
+
         std::ofstream objFile(projectObjPath, std::ios::binary);
         std::unique_ptr<gbpp::Emitter> binEmitter = (backendTarget == gbpp::Target::Win64) ?
             gbpp::Emitter::createCoffWin64() : gbpp::Emitter::createElfSysV();
@@ -506,14 +519,16 @@ void printHelp(const std::string& command = "") {
         divo::print_item("Initializes a new GodByte++ project in the current directory.");
     }
     else if (command == "build") {
-        divo::print_item("Usage: divo build [--target=<name>] [--ir] [--asm] [-O|--opt] [--tiny]");
+        divo::print_item("Usage: divo build [--target=<name>] [--ir] [--asm] [-O|--opt] [--tiny] [--debug|--db] [--link-args=<args>]");
         divo::print_item("Builds the project for the specified target.");
         divo::print_item("Options:");
-        divo::print_item("  --target=<name>  Specify the target to build (default: desktop)");
-        divo::print_item("  --ir             Dump the intermediate representation (IR)");
-        divo::print_item("  --asm            Dump the assembly output");
-        divo::print_item("  -O, --opt        Enable optimization passes");
-        divo::print_item("  --tiny           Build minimal executable (Windows only)");
+        divo::print_item("  --target=<name>    Specify the target to build (default: desktop)");
+        divo::print_item("  --ir               Dump the intermediate representation (IR)");
+        divo::print_item("  --asm              Dump the assembly output");
+        divo::print_item("  -O, --opt          Enable optimization passes");
+        divo::print_item("  --tiny             Build minimal executable (Windows only)");
+        divo::print_item("  --debug, --db      Dump debug information including padding, binary, assembly, IR, and source context");
+        divo::print_item("  --link-args=<args> Pass additional platform-specific linker arguments");
     }
     else if (command == "add") {
         divo::print_item("Usage: divo add <library_name>");

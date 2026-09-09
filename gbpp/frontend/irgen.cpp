@@ -7,6 +7,8 @@
 
 namespace gbpp {
 
+    thread_local SourceLoc t_currentLoc = { "", 0, 0 };
+
     int IRGenerator::getOffset(Type* type, const std::string& field) {
         std::string structName = type->name;
         if (type->isPointer()) structName = type->base->name;
@@ -64,11 +66,14 @@ namespace gbpp {
     }
 
     void IRGenerator::emit(Instruction inst) {
+        inst.loc = t_currentLoc;
         if (m_currentBlock) m_currentBlock->instructions.push_back(inst);
     }
 
     void IRGenerator::genFunction(const FunctionDecl& fn) {
         if (!fn.body) return;
+        t_currentLoc = fn.loc;
+
         IRFunction irFn;
         irFn.name = fn.name;
         if (!fn.name.starts_with(".sec$")) {
@@ -164,6 +169,7 @@ namespace gbpp {
     }
 
     void IRGenerator::genStmt(const Stmt& stmt) {
+        t_currentLoc = stmt.loc;
         if (auto block = dynamic_cast<const BlockStmt*>(&stmt)) {
             genBlock(*block);
         }
@@ -454,6 +460,8 @@ namespace gbpp {
     }
 
     int IRGenerator::genExpr(const Expr& expr) {
+        t_currentLoc = expr.loc;
+
         if (expr.type && expr.type->scalar == ScalarType::FunctionPtr) {
             
         }
@@ -1232,30 +1240,62 @@ namespace gbpp {
     static bool vectorizeLoop(IRFunction& fn, BasicBlock* loopBlock, int& seqVecReg) {
         if (loopBlock->name.find("_vec") != std::string::npos) return false;
 
+        int elementBytes = 0;
+        bool hasPayload = false;
         for (auto& inst : loopBlock->instructions) {
-            if (inst.op == OpCode::DIV || inst.op == OpCode::FDIV ||
+            if (inst.op == OpCode::DIV || inst.op == OpCode::UDIV ||
+                inst.op == OpCode::MOD || inst.op == OpCode::UMOD ||
                 inst.op == OpCode::CALL || inst.op == OpCode::RET ||
-                inst.op == OpCode::INLINE_ASM || inst.op == OpCode::ALLOC || inst.op == OpCode::CMP_EQ) {
+                inst.op == OpCode::INLINE_ASM || inst.op == OpCode::ALLOC ||
+                inst.op == OpCode::CMP_EQ || inst.op == OpCode::CMP_NE ||
+                inst.op == OpCode::CAST || inst.op == OpCode::TRUNC ||
+                inst.op == OpCode::ZEXT || inst.op == OpCode::SEXT) {
                 return false;
+            }
+            if (inst.op == OpCode::LOAD || inst.op == OpCode::STORE) {
+                hasPayload = true;
+                if (elementBytes == 0) elementBytes = inst.bytes;
+                else if (elementBytes != inst.bytes) return false;
             }
         }
 
+        if (!hasPayload || (elementBytes != 4 && elementBytes != 8)) return false;
+
+        int vectorBytes = 32;
+        int VF = vectorBytes / elementBytes;
+
         int indReg = -1;
+        Instruction* cmpInst = nullptr;
         for (auto& inst : loopBlock->instructions) {
             if ((inst.op == OpCode::CMP_LT || inst.op == OpCode::CMP_LE) && inst.src2 == -1) {
                 indReg = inst.src1;
-            }
-        }
-        if (indReg == -1) return false;
-
-        int indIncr = -1;
-        for (auto& inst : loopBlock->instructions) {
-            if (inst.op == OpCode::ADD && (inst.dest == indReg || inst.src1 == indReg) && inst.imm == 1) {
-                indIncr = 1;
+                cmpInst = &inst;
                 break;
             }
         }
-        if (indIncr == -1) return false;
+        if (indReg == -1 || !cmpInst) return false;
+
+        bool stepFound = false;
+        for (auto& inst : loopBlock->instructions) {
+            if (inst.op == OpCode::ADD && (inst.dest == indReg || inst.src1 == indReg) && inst.imm == 1) {
+                stepFound = true;
+                break;
+            }
+        }
+        if (!stepFound) return false;
+
+        uint64_t loopBound = cmpInst->imm;
+        if (cmpInst->op == OpCode::CMP_LE) loopBound += 1;
+
+        if (loopBound % VF != 0) {
+            if (loopBound % (16 / elementBytes) == 0) {
+                vectorBytes = 16;
+                VF = vectorBytes / elementBytes;
+            }
+            else {
+                return false;
+            }
+        }
 
         std::set<int> addrRegs;
         std::vector<int> worklist;
@@ -1276,51 +1316,42 @@ namespace gbpp {
             }
         }
 
-        bool hasPayload = false;
-        for (auto& inst : loopBlock->instructions) {
-            if (inst.op == OpCode::STORE) hasPayload = true;
-        }
-        if (!hasPayload) return false;
-
-        std::vector<Instruction> vecInsts;
-        std::map<int, int> vecRegMap;
-
         if (seqVecReg == -1) {
             int seqAlloc = fn.allocVReg();
             std::vector<Instruction> seqInsts;
-            seqInsts.push_back({ OpCode::ALLOC, seqAlloc, -1, -1, 32, 8 });
-            for (uint64_t i = 0; i < 4; ++i) {
+            seqInsts.push_back({ OpCode::ALLOC, seqAlloc, -1, -1, (uint64_t)vectorBytes, 8 });
+
+            for (uint64_t i = 0; i < VF; ++i) {
                 int valReg = fn.allocVReg();
-                seqInsts.push_back({ OpCode::CONST, valReg, -1, -1, i, 8 });
+                seqInsts.push_back({ OpCode::CONST, valReg, -1, -1, i, elementBytes });
                 int ptrReg = fn.allocVReg();
-                seqInsts.push_back({ OpCode::ADD, ptrReg, seqAlloc, -1, i * 8, 8 });
-                Instruction st = { OpCode::STORE, -1, ptrReg, valReg, 0, 8 };
+                seqInsts.push_back({ OpCode::ADD, ptrReg, seqAlloc, -1, i * elementBytes, 8 });
+                Instruction st = { OpCode::STORE, -1, ptrReg, valReg, 0, elementBytes };
                 st.isVolatile = true;
                 seqInsts.push_back(st);
             }
             seqVecReg = fn.allocVReg();
-            seqInsts.push_back({ OpCode::VLOAD256, seqVecReg, seqAlloc, -1, 0, 32 });
+            seqInsts.push_back({ OpCode::VLOAD, seqVecReg, seqAlloc, -1, (uint64_t)elementBytes, vectorBytes });
 
             auto insertIt = fn.blocks[0]->instructions.end();
             while (insertIt != fn.blocks[0]->instructions.begin()) {
                 auto prevIt = std::prev(insertIt);
-                if (prevIt->op == OpCode::JMP || prevIt->op == OpCode::JMP_FALSE || prevIt->op == OpCode::RET) {
-                    insertIt = prevIt;
-                }
-                else {
-                    break;
-                }
+                if (prevIt->op == OpCode::JMP || prevIt->op == OpCode::JMP_FALSE || prevIt->op == OpCode::RET) insertIt = prevIt;
+                else break;
             }
             fn.blocks[0]->instructions.insert(insertIt, seqInsts.begin(), seqInsts.end());
         }
 
         int vecIndReg = -1;
+        std::vector<Instruction> vecInsts;
+        std::map<int, int> vecRegMap;
+
         auto getVecIndReg = [&]() {
             if (vecIndReg != -1) return vecIndReg;
             int bcast = fn.allocVReg();
-            vecInsts.push_back({ OpCode::VPBROADCASTQ, bcast, indReg, -1, 0, 32 });
+            vecInsts.push_back({ OpCode::VPBROADCAST, bcast, indReg, -1, (uint64_t)elementBytes, vectorBytes });
             vecIndReg = fn.allocVReg();
-            vecInsts.push_back({ OpCode::VADD256, vecIndReg, bcast, seqVecReg, 0, 32 });
+            vecInsts.push_back({ OpCode::VADD, vecIndReg, bcast, seqVecReg, (uint64_t)elementBytes, vectorBytes });
             return vecIndReg;
         };
 
@@ -1328,47 +1359,46 @@ namespace gbpp {
             if (src == -1) {
                 int cReg = fn.allocVReg();
                 int bReg = fn.allocVReg();
-
                 auto insertIt = fn.blocks[0]->instructions.end();
                 while (insertIt != fn.blocks[0]->instructions.begin()) {
                     auto prevIt = std::prev(insertIt);
-                    if (prevIt->op == OpCode::JMP || prevIt->op == OpCode::JMP_FALSE || prevIt->op == OpCode::RET) {
-                        insertIt = prevIt;
-                    }
-                    else {
-                        break;
-                    }
+                    if (prevIt->op == OpCode::JMP || prevIt->op == OpCode::JMP_FALSE || prevIt->op == OpCode::RET) insertIt = prevIt;
+                    else break;
                 }
-                insertIt = fn.blocks[0]->instructions.insert(insertIt, { OpCode::CONST, cReg, -1, -1, imm, 8 });
+
+                insertIt = fn.blocks[0]->instructions.insert(insertIt, { OpCode::CONST, cReg, -1, -1, imm, elementBytes });
                 insertIt++;
-                insertIt = fn.blocks[0]->instructions.insert(insertIt, { OpCode::VPBROADCASTQ, bReg, cReg, -1, 0, 32 });
+                fn.blocks[0]->instructions.insert(insertIt, { OpCode::VPBROADCAST, bReg, cReg, -1, (uint64_t)elementBytes, vectorBytes });
                 return bReg;
             }
             if (src == indReg) return getVecIndReg();
             if (vecRegMap.count(src)) return vecRegMap[src];
 
             int bReg = fn.allocVReg();
-            vecInsts.push_back({ OpCode::VPBROADCASTQ, bReg, src, -1, 0, 32 });
+            vecInsts.push_back({ OpCode::VPBROADCAST, bReg, src, -1, (uint64_t)elementBytes, vectorBytes });
             return bReg;
         };
 
         for (auto& inst : loopBlock->instructions) {
-            if (inst.op == OpCode::CMP_LT || inst.op == OpCode::CMP_LE || inst.op == OpCode::JMP_FALSE || inst.op == OpCode::JMP || inst.op == OpCode::CONST || inst.op == OpCode::CAST || inst.op == OpCode::ZEXT || inst.op == OpCode::TRUNC) {
+            if (inst.op == OpCode::CMP_LT || inst.op == OpCode::CMP_LE || inst.op == OpCode::JMP_FALSE ||
+                inst.op == OpCode::JMP || inst.op == OpCode::CONST || inst.op == OpCode::CAST ||
+                inst.op == OpCode::ZEXT || inst.op == OpCode::TRUNC || inst.op == OpCode::SEXT) {
                 vecInsts.push_back(inst);
                 continue;
             }
 
             if (inst.op == OpCode::ADD && (inst.dest == indReg || inst.src1 == indReg) && inst.imm == 1) {
                 Instruction i = inst;
-                i.imm = 4;
+                i.imm = VF;
                 vecInsts.push_back(i);
                 continue;
             }
 
             if (inst.op == OpCode::LOAD) {
                 Instruction vInst = inst;
-                vInst.op = OpCode::VLOAD256;
-                vInst.bytes = 32;
+                vInst.op = OpCode::VLOAD;
+                vInst.bytes = vectorBytes;
+                vInst.imm = elementBytes;
                 vInst.dest = fn.allocVReg();
                 vecRegMap[inst.dest] = vInst.dest;
                 vecInsts.push_back(vInst);
@@ -1377,15 +1407,14 @@ namespace gbpp {
 
             if (inst.op == OpCode::STORE) {
                 Instruction vInst = inst;
-                vInst.op = OpCode::VSTORE256;
-                vInst.bytes = 32;
-                if (inst.src2 != -1) {
-                    vInst.src2 = handlePayloadOperand(inst.src2, 0);
-                }
+                vInst.op = OpCode::VSTORE;
+                vInst.bytes = vectorBytes;
+                vInst.imm = elementBytes;
+                if (inst.src2 != -1) vInst.src2 = handlePayloadOperand(inst.src2, 0);
                 else {
                     vInst.src1 = inst.src1;
                     vInst.src2 = handlePayloadOperand(-1, inst.imm);
-                    vInst.imm = 0;
+                    vInst.imm = elementBytes;
                 }
                 vecInsts.push_back(vInst);
                 continue;
@@ -1401,62 +1430,45 @@ namespace gbpp {
                 else {
                     Instruction vInst = inst;
 
-                    if (inst.op == OpCode::SHL && inst.src2 == -1) {
-                        if (inst.imm == 1) {
-                            vInst.op = OpCode::VADD256;
-                            vInst.bytes = 32;
-                            vInst.dest = fn.allocVReg();
-                            vecRegMap[inst.dest] = vInst.dest;
-
-                            int vectorSrc = handlePayloadOperand(inst.src1, 0);
-                            vInst.src1 = vectorSrc;
-                            vInst.src2 = vectorSrc;
-                            vInst.imm = 0;
-                            vecInsts.push_back(vInst);
-                            continue;
-                        }
-                        else {
-                            vInst.op = OpCode::VMUL256;
-                            vInst.bytes = 32;
-                            vInst.dest = fn.allocVReg();
-                            vecRegMap[inst.dest] = vInst.dest;
-                            vInst.src1 = handlePayloadOperand(inst.src1, 0);
-                            vInst.src2 = handlePayloadOperand(-1, 1ULL << inst.imm);
-                            vInst.imm = 0;
-                            vecInsts.push_back(vInst);
-                            continue;
-                        }
+                    if (inst.op == OpCode::SHL && inst.src2 == -1 && inst.imm == 1) {
+                        vInst.op = OpCode::VADD;
+                        vInst.bytes = vectorBytes;
+                        vInst.imm = elementBytes;
+                        vInst.dest = fn.allocVReg();
+                        vecRegMap[inst.dest] = vInst.dest;
+                        int vectorSrc = handlePayloadOperand(inst.src1, 0);
+                        vInst.src1 = vectorSrc;
+                        vInst.src2 = vectorSrc;
+                        vecInsts.push_back(vInst);
+                        continue;
                     }
 
                     switch (inst.op) {
-                        case OpCode::ADD: vInst.op = OpCode::VADD256; break;
-                        case OpCode::SUB: vInst.op = OpCode::VSUB256; break;
-                        case OpCode::MUL: vInst.op = OpCode::VMUL256; break;
-                        case OpCode::AND: vInst.op = OpCode::VAND256; break;
-                        case OpCode::OR:  vInst.op = OpCode::VOR256; break;
-                        case OpCode::XOR: vInst.op = OpCode::VXOR256; break;
+                        case OpCode::ADD: vInst.op = OpCode::VADD; break;
+                        case OpCode::SUB: vInst.op = OpCode::VSUB; break;
+                        case OpCode::MUL: vInst.op = OpCode::VMUL; break;
+                        case OpCode::AND: vInst.op = OpCode::VAND; break;
+                        case OpCode::OR:  vInst.op = OpCode::VOR; break;
+                        case OpCode::XOR: vInst.op = OpCode::VXOR; break;
                         default: break;
                     }
-                    vInst.bytes = 32;
+
+                    vInst.bytes = vectorBytes;
+                    vInst.imm = elementBytes;
                     vInst.dest = fn.allocVReg();
                     vecRegMap[inst.dest] = vInst.dest;
-
                     vInst.src1 = handlePayloadOperand(inst.src1, 0);
-                    if (inst.src2 != -1) {
-                        vInst.src2 = handlePayloadOperand(inst.src2, 0);
-                    }
-                    else {
-                        vInst.src2 = handlePayloadOperand(-1, inst.imm);
-                        vInst.imm = 0;
-                    }
+                    if (inst.src2 != -1) vInst.src2 = handlePayloadOperand(inst.src2, 0);
+                    else vInst.src2 = handlePayloadOperand(-1, inst.imm);
                     vecInsts.push_back(vInst);
                 }
                 continue;
             }
             vecInsts.push_back(inst);
         }
+
         loopBlock->instructions = std::move(vecInsts);
-        loopBlock->name += "_vec";
+        loopBlock->name += "_vec_x" + std::to_string(VF);
         return true;
     }
 
@@ -1603,19 +1615,19 @@ namespace gbpp {
                                     isMutuallyRecursive = true;
                                 }
 
-                                if (target && target != &fn && !isMutuallyRecursive && !target->blocks.empty() && (target->isInline || target->blocks.size() <= 4)) {
+                                if (target && target != &fn && !isMutuallyRecursive && !target->blocks.empty() && (target->isInline || (!target->isExported && target->blocks.size() <= 20))) {
                                     int instCount = 0;
                                     for (auto& tblock : target->blocks) instCount += tblock->instructions.size();
 
-                                    if (instCount <= 30) {
+                                    if (instCount <= 200) {
                                         std::map<int, int> vregMap;
                                         std::map<int, int> blockMap;
-
                                         for (auto& tblock : target->blocks) {
                                             BasicBlock* newB = fn.createBlock();
                                             newB->name = currentBlock->name + "$inlined_" + target->name + "$_" + tblock->name;
                                             blockMap[tblock->id] = newB->id;
                                         }
+
                                         BasicBlock* resumeBlock = fn.createBlock(currentBlock->name + "_resume");
 
                                         for (auto& tblock : target->blocks) {
@@ -1635,6 +1647,7 @@ namespace gbpp {
                                         }
 
                                         int retReg = inst.dest != -1 ? inst.dest : fn.allocVReg();
+
                                         for (size_t k = i + 1; k < currentBlock->instructions.size(); ++k) {
                                             resumeBlock->instructions.push_back(currentBlock->instructions[k]);
                                         }
@@ -1645,6 +1658,7 @@ namespace gbpp {
 
                                             for (auto& tinst : tblock->instructions) {
                                                 if (tinst.op == OpCode::GET_PARAM) continue;
+
                                                 if (tinst.op == OpCode::RET) {
                                                     if (tinst.src1 != -1 && inst.dest != -1) {
                                                         int srcReg = vregMap.count(tinst.src1) ? vregMap[tinst.src1] : tinst.src1;
@@ -1654,7 +1668,6 @@ namespace gbpp {
                                                 }
                                                 else {
                                                     Instruction cpy = tinst;
-
                                                     if (cpy.dest != -1) {
                                                         cpy.dest = vregMap[tinst.dest];
                                                     }
@@ -1670,6 +1683,7 @@ namespace gbpp {
                                                 }
                                             }
                                         }
+
                                         newInsts.push_back({ OpCode::JMP, -1, -1, -1, (uint64_t)blockMap[target->blocks[0]->id] });
                                         didInlineHere = true;
                                         break;
@@ -1687,6 +1701,349 @@ namespace gbpp {
                     if (inlinedAnything) break;
                 }
             }
+
+
+
+
+
+
+
+
+
+
+            std::cout << "[Optimizer] Running Full-Function Const Eval" << std::endl;
+            for (auto& fn : mod.functions) {
+                if (fn.argCount > 0 || fn.blocks.empty() || fn.isInline) continue;
+
+                bool alreadyConst = false;
+                if (fn.blocks.size() == 1) {
+                    auto& insts = fn.blocks[0]->instructions;
+                    if (insts.size() == 1 && insts[0].op == OpCode::RET) {
+                        alreadyConst = true;
+                    }
+                    else if (insts.size() == 2 && insts[0].op == OpCode::CONST && insts[1].op == OpCode::RET) {
+                        alreadyConst = true;
+                    }
+                }
+                if (alreadyConst) continue;
+
+                struct SimValue {
+                    bool isValid = false;
+                    bool isPtr = false;
+                    uint64_t scalar = 0;
+                    int allocId = -1;
+                    int64_t offset = 0;
+                };
+
+                std::vector<SimValue> env(fn.vRegCount + 1024);
+                std::map<int, std::vector<uint8_t>> mem;
+                int nextAllocId = 1;
+                bool simulationTainted = false;
+
+                auto readMem = [&](int allocId, int64_t offset, int bytes, uint64_t& outVal) -> bool {
+                    if (!mem.count(allocId)) return false;
+                    auto& arr = mem[allocId];
+                    if (offset < 0 || offset + bytes > arr.size()) return false;
+                    uint64_t val = 0;
+                    std::memcpy(&val, arr.data() + offset, bytes);
+                    outVal = val;
+                    return true;
+                };
+
+                auto writeMem = [&](int allocId, int64_t offset, int bytes, uint64_t val) -> bool {
+                    if (!mem.count(allocId)) return false;
+                    auto& arr = mem[allocId];
+                    if (offset < 0 || offset + bytes > arr.size()) return false;
+                    std::memcpy(arr.data() + offset, &val, bytes);
+                    return true;
+                };
+
+                int currentBlockId = fn.blocks[0]->id;
+                int currentInstIdx = 0;
+                int stepCount = 0;
+                const int MAX_STEPS = 50000000;
+                bool finished = false;
+                uint64_t retScalar = 0;
+                int retBytes = 8;
+                bool hasRet = false;
+
+                while (stepCount < MAX_STEPS && !simulationTainted && !finished) {
+                    BasicBlock* currBlock = nullptr;
+                    for (auto& b : fn.blocks) {
+                        if (b->id == currentBlockId) { currBlock = b.get(); break; }
+                    }
+                    if (!currBlock) { simulationTainted = true; break; }
+                    if (currentInstIdx >= currBlock->instructions.size()) { simulationTainted = true; break; }
+
+                    const Instruction& inst = currBlock->instructions[currentInstIdx];
+                    stepCount++;
+
+                    if (inst.isVolatile || inst.op == OpCode::CALL || inst.op == OpCode::INLINE_ASM ||
+                        inst.op == OpCode::LOAD_LOCAL || inst.op == OpCode::STORE_LOCAL ||
+                        inst.op == OpCode::GET_PARAM || inst.op == OpCode::VSTORE ||
+                        inst.op == OpCode::VLOAD || inst.op == OpCode::VPBROADCAST ||
+                        inst.op == OpCode::TRAP || inst.op == OpCode::UNREACHABLE) {
+                        simulationTainted = true;
+                        break;
+                    }
+
+                    int maxRegReq = std::max({ inst.dest, inst.src1, inst.src2 });
+                    for (int a : inst.args) maxRegReq = std::max(maxRegReq, a);
+                    if (maxRegReq >= env.size()) env.resize(maxRegReq + 1024);
+
+                    SimValue v1 = (inst.src1 != -1) ? env[inst.src1] : SimValue();
+                    SimValue v2 = (inst.src2 != -1) ? env[inst.src2] : SimValue();
+                    uint64_t imm = inst.imm;
+
+                    auto setScalar = [&](uint64_t val) { if (inst.dest != -1) env[inst.dest] = { true, false, val, -1, 0 }; };
+                    auto setPtr = [&](int allocId, int64_t offset) { if (inst.dest != -1) env[inst.dest] = { true, true, 0, allocId, offset }; };
+                    auto invalidate = [&]() { if (inst.dest != -1) env[inst.dest] = SimValue(); };
+
+                    bool jumpTaken = false;
+
+                    switch (inst.op) {
+                    case OpCode::CONST: setScalar(imm); break;
+                    case OpCode::MOV:
+                        if (v1.isValid) env[inst.dest] = v1; else invalidate();
+                        break;
+                    case OpCode::ADD:
+                        if (v1.isValid && !v1.isPtr && inst.src2 == -1) setScalar(v1.scalar + imm);
+                        else if (v1.isValid && !v1.isPtr && v2.isValid && !v2.isPtr) setScalar(v1.scalar + v2.scalar);
+                        else if (v1.isValid && v1.isPtr && inst.src2 == -1) setPtr(v1.allocId, v1.offset + imm);
+                        else if (v1.isValid && v1.isPtr && v2.isValid && !v2.isPtr) setPtr(v1.allocId, v1.offset + (int64_t)v2.scalar);
+                        else if (v2.isValid && v2.isPtr && inst.src1 == -1) setPtr(v2.allocId, v2.offset + imm);
+                        else if (v2.isValid && v2.isPtr && v1.isValid && !v1.isPtr) setPtr(v2.allocId, v2.offset + (int64_t)v1.scalar);
+                        else invalidate();
+                        break;
+                    case OpCode::SUB:
+                        if (v1.isValid && !v1.isPtr && inst.src2 == -1) setScalar(v1.scalar - imm);
+                        else if (v1.isValid && !v1.isPtr && v2.isValid && !v2.isPtr) setScalar(v1.scalar - v2.scalar);
+                        else if (v1.isValid && v1.isPtr && inst.src2 == -1) setPtr(v1.allocId, v1.offset - imm);
+                        else if (v1.isValid && v1.isPtr && v2.isValid && !v2.isPtr) setPtr(v1.allocId, v1.offset - (int64_t)v2.scalar);
+                        else invalidate();
+                        break;
+                    case OpCode::MUL:
+                        if (v1.isValid && !v1.isPtr && inst.src2 == -1) setScalar(v1.scalar * imm);
+                        else if (v1.isValid && !v1.isPtr && v2.isValid && !v2.isPtr) setScalar(v1.scalar * v2.scalar);
+                        else invalidate();
+                        break;
+                    case OpCode::DIV: case OpCode::UDIV:
+                        if (v1.isValid && !v1.isPtr && v2.isValid && !v2.isPtr && v2.scalar != 0) {
+                            if (inst.op == OpCode::DIV) setScalar((int64_t)v1.scalar / (int64_t)v2.scalar);
+                            else setScalar(v1.scalar / v2.scalar);
+                        }
+                        else invalidate();
+                        break;
+                    case OpCode::MOD: case OpCode::UMOD:
+                        if (v1.isValid && !v1.isPtr && v2.isValid && !v2.isPtr && v2.scalar != 0) {
+                            if (inst.op == OpCode::MOD) setScalar((int64_t)v1.scalar % (int64_t)v2.scalar);
+                            else setScalar(v1.scalar % v2.scalar);
+                        }
+                        else invalidate();
+                        break;
+                    case OpCode::SHL:
+                        if (v1.isValid && !v1.isPtr && inst.src2 == -1) setScalar(v1.scalar << imm);
+                        else if (v1.isValid && !v1.isPtr && v2.isValid && !v2.isPtr) setScalar(v1.scalar << v2.scalar);
+                        else invalidate();
+                        break;
+                    case OpCode::SHR:
+                        if (v1.isValid && !v1.isPtr && inst.src2 == -1) setScalar(v1.scalar >> imm);
+                        else if (v1.isValid && !v1.isPtr && v2.isValid && !v2.isPtr) setScalar(v1.scalar >> v2.scalar);
+                        else invalidate();
+                        break;
+                    case OpCode::OR:
+                        if (v1.isValid && !v1.isPtr && inst.src2 == -1) setScalar(v1.scalar | imm);
+                        else if (v1.isValid && !v1.isPtr && v2.isValid && !v2.isPtr) setScalar(v1.scalar | v2.scalar);
+                        else invalidate();
+                        break;
+                    case OpCode::AND:
+                        if (v1.isValid && !v1.isPtr && inst.src2 == -1) setScalar(v1.scalar & imm);
+                        else if (v1.isValid && !v1.isPtr && v2.isValid && !v2.isPtr) setScalar(v1.scalar & v2.scalar);
+                        else invalidate();
+                        break;
+                    case OpCode::XOR:
+                        if (v1.isValid && !v1.isPtr && inst.src2 == -1) setScalar(v1.scalar ^ imm);
+                        else if (v1.isValid && !v1.isPtr && v2.isValid && !v2.isPtr) setScalar(v1.scalar ^ v2.scalar);
+                        else invalidate();
+                        break;
+                    case OpCode::CMP_LT:
+                        if (v1.isValid && !v1.isPtr && inst.src2 == -1) setScalar(v1.scalar < imm);
+                        else if (v1.isValid && !v1.isPtr && v2.isValid && !v2.isPtr) setScalar(v1.scalar < v2.scalar);
+                        else invalidate();
+                        break;
+                    case OpCode::CMP_LE:
+                        if (v1.isValid && !v1.isPtr && inst.src2 == -1) setScalar(v1.scalar <= imm);
+                        else if (v1.isValid && !v1.isPtr && v2.isValid && !v2.isPtr) setScalar(v1.scalar <= v2.scalar);
+                        else invalidate();
+                        break;
+                    case OpCode::CMP_EQ:
+                        if (v1.isValid && !v1.isPtr && inst.src2 == -1) setScalar(v1.scalar == imm);
+                        else if (v1.isValid && !v1.isPtr && v2.isValid && !v2.isPtr) setScalar(v1.scalar == v2.scalar);
+                        else invalidate();
+                        break;
+                    case OpCode::CMP_NE:
+                        if (v1.isValid && !v1.isPtr && inst.src2 == -1) setScalar(v1.scalar != imm);
+                        else if (v1.isValid && !v1.isPtr && v2.isValid && !v2.isPtr) setScalar(v1.scalar != v2.scalar);
+                        else invalidate();
+                        break;
+                    case OpCode::CMP_GT:
+                        if (v1.isValid && !v1.isPtr && inst.src2 == -1) setScalar(v1.scalar > imm);
+                        else if (v1.isValid && !v1.isPtr && v2.isValid && !v2.isPtr) setScalar(v1.scalar > v2.scalar);
+                        else invalidate();
+                        break;
+                    case OpCode::CMP_GE:
+                        if (v1.isValid && !v1.isPtr && inst.src2 == -1) setScalar(v1.scalar >= imm);
+                        else if (v1.isValid && !v1.isPtr && v2.isValid && !v2.isPtr) setScalar(v1.scalar >= v2.scalar);
+                        else invalidate();
+                        break;
+                    case OpCode::CAST: case OpCode::ZEXT: case OpCode::TRUNC:
+                        if (v1.isValid && !v1.isPtr) {
+                            uint64_t val = v1.scalar;
+                            if (inst.bytes == 1) val &= 0xFF;
+                            else if (inst.bytes == 2) val &= 0xFFFF;
+                            else if (inst.bytes == 4) val &= 0xFFFFFFFF;
+                            setScalar(val);
+                        }
+                        else invalidate();
+                        break;
+                    case OpCode::SEXT:
+                        if (v1.isValid && !v1.isPtr) {
+                            int64_t val = v1.scalar;
+                            if (inst.imm == 1) val = (int8_t)val;
+                            else if (inst.imm == 2) val = (int16_t)val;
+                            else if (inst.imm == 4) val = (int32_t)val;
+                            if (inst.bytes == 1) val &= 0xFF;
+                            else if (inst.bytes == 2) val &= 0xFFFF;
+                            else if (inst.bytes == 4) val &= 0xFFFFFFFF;
+                            setScalar((uint64_t)val);
+                        }
+                        else invalidate();
+                        break;
+                    case OpCode::ALLOC:
+                        mem[nextAllocId].resize(inst.imm, 0);
+                        setPtr(nextAllocId, 0);
+                        nextAllocId++;
+                        break;
+                    case OpCode::STORE:
+                        if (v1.isValid && v1.isPtr) {
+                            uint64_t storeVal = 0;
+                            if (inst.src2 == -1) storeVal = imm;
+                            else if (v2.isValid && !v2.isPtr) storeVal = v2.scalar;
+                            else { simulationTainted = true; break; }
+                            if (!writeMem(v1.allocId, v1.offset, inst.bytes, storeVal)) simulationTainted = true;
+                        }
+                        else simulationTainted = true;
+                        break;
+                    case OpCode::LOAD:
+                        if (v1.isValid && v1.isPtr) {
+                            uint64_t loadedVal = 0;
+                            if (readMem(v1.allocId, v1.offset, inst.bytes, loadedVal)) setScalar(loadedVal);
+                            else { simulationTainted = true; break; }
+                        }
+                        else { simulationTainted = true; break; }
+                        break;
+                    case OpCode::JMP:
+                        currentBlockId = inst.imm;
+                        currentInstIdx = 0;
+                        jumpTaken = true;
+                        break;
+                    case OpCode::JMP_FALSE:
+                        if (v1.isValid && !v1.isPtr) {
+                            if (v1.scalar == 0) {
+                                currentBlockId = inst.imm;
+                                currentInstIdx = 0;
+                                jumpTaken = true;
+                            }
+                        }
+                        else {
+                            simulationTainted = true;
+                        }
+                        break;
+                    case OpCode::RET:
+                        if (inst.src1 != -1) {
+                            if (v1.isValid && !v1.isPtr) {
+                                retScalar = v1.scalar;
+                                retBytes = inst.bytes;
+                                hasRet = true;
+                            }
+                            else {
+                                simulationTainted = true;
+                            }
+                        }
+                        finished = true;
+                        break;
+                    case OpCode::SELECT:
+                        if (v1.isValid && !v1.isPtr) {
+                            if (v1.scalar != 0) {
+                                if (v2.isValid) env[inst.dest] = v2; else invalidate();
+                            }
+                            else {
+                                SimValue v3 = (inst.args[0] != -1 && inst.args[0] < env.size()) ? env[inst.args[0]] : SimValue();
+                                if (v3.isValid) env[inst.dest] = v3; else invalidate();
+                            }
+                        }
+                        else {
+                            invalidate();
+                        }
+                        break;
+                    case OpCode::BSWAP:
+                        if (v1.isValid && !v1.isPtr) {
+                            uint64_t val = v1.scalar;
+                            uint64_t res = 0;
+                            if (inst.bytes == 2) res = ((val >> 8) & 0xFF) | ((val & 0xFF) << 8);
+                            else if (inst.bytes == 4) res = ((val >> 24) & 0xFF) | ((val >> 8) & 0xFF00) | ((val & 0xFF00) << 8) | ((val & 0xFF) << 24);
+                            else if (inst.bytes == 8) res = ((val & 0x00000000000000FFULL) << 56) | ((val & 0x000000000000FF00ULL) << 40) | ((val & 0x0000000000FF0000ULL) << 24) | ((val & 0x00000000FF000000ULL) << 8) | ((val & 0x000000FF00000000ULL) >> 8) | ((val & 0x0000FF0000000000ULL) >> 24) | ((val & 0x00FF000000000000ULL) >> 40) | ((val & 0xFF00000000000000ULL) >> 56);
+                            setScalar(res);
+                        }
+                        else invalidate();
+                        break;
+                    case OpCode::LOAD_STR:
+                        simulationTainted = true;
+                        break;
+                    default:
+                        simulationTainted = true;
+                        break;
+                    }
+
+                    if (!jumpTaken && !finished) {
+                        currentInstIdx++;
+                    }
+                }
+
+                if (finished && !simulationTainted) {
+                    std::cout << "[Full Const Eval] Successfully evaluated function " << fn.name << " to constant.\n";
+
+                    SourceLoc funcLoc = { "", 0, 0 };
+                    if (!fn.blocks.empty() && !fn.blocks.back()->instructions.empty()) {
+                        funcLoc = fn.blocks.back()->instructions.back().loc;
+                    }
+
+                    fn.blocks.clear();
+                    fn.blocks.push_back(std::make_unique<BasicBlock>());
+                    fn.blocks[0]->id = 0;
+                    fn.blocks[0]->name = ".L_entry";
+
+                    if (hasRet) {
+                        int reg = fn.allocVReg();
+                        Instruction cInst = { OpCode::CONST, reg, -1, -1, retScalar, retBytes };
+                        cInst.loc = funcLoc;
+                        fn.blocks[0]->instructions.push_back(cInst);
+
+                        Instruction rInst = { OpCode::RET, -1, reg, -1, 0, retBytes };
+                        rInst.loc = funcLoc;
+                        fn.blocks[0]->instructions.push_back(rInst);
+                    }
+                    else {
+                        Instruction rInst = { OpCode::RET, -1, -1, -1, 0, 8 };
+                        rInst.loc = funcLoc;
+                        fn.blocks[0]->instructions.push_back(rInst);
+                    }
+                    globalPassChanged = true;
+                }
+            }
+
+
+
 
 
 
@@ -1873,8 +2230,8 @@ namespace gbpp {
                             if (inst.isVolatile || inst.op == OpCode::STORE || inst.op == OpCode::LOAD ||
                                 inst.op == OpCode::CALL || inst.op == OpCode::INLINE_ASM ||
                                 inst.op == OpCode::RET || inst.op == OpCode::LOAD_LOCAL || inst.op == OpCode::STORE_LOCAL ||
-                                inst.op == OpCode::GET_PARAM || inst.op == OpCode::VSTORE256 ||
-                                inst.op == OpCode::VLOAD256 || inst.op == OpCode::VPBROADCASTQ) {
+                                inst.op == OpCode::GET_PARAM || inst.op == OpCode::VSTORE ||
+                                inst.op == OpCode::VLOAD || inst.op == OpCode::VPBROADCAST) {
                                 return false;
                             }
                             return true;
@@ -2879,17 +3236,15 @@ namespace gbpp {
 
             
 
-            std::cout << "[Optimizer] Running vectorizer" << std::endl;
             bool vecChanged = true;
             while (vecChanged) {
                 vecChanged = false;
                 for (auto& fn : mod.functions) {
-                    int seqVecReg = -1;
                     size_t numBlocks = fn.blocks.size();
                     for (size_t bIdx = 0; bIdx < numBlocks; ++bIdx) {
+                        int seqVecReg = -1;
                         auto* block = fn.blocks[bIdx].get();
                         if (block->instructions.empty()) continue;
-
                         if (block->instructions.back().op == OpCode::JMP && block->instructions.back().imm == block->id) {
                             if (vectorizeLoop(fn, block, seqVecReg)) {
                                 std::cout << "[DEBUG Global] Vectorizer requested global pass restart\n";

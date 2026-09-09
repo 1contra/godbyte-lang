@@ -22,8 +22,8 @@ namespace gbpp {
         CMP_NE, CMP_GT, CMP_GE, CMP_LE,
         INLINE_ASM,
         OR, SHL, SHR,
-        VLOAD256, VSTORE256, VADD256, VSUB256, VMUL256,
-        VAND256, VOR256, VXOR256, VPBROADCASTQ,
+        VLOAD, VSTORE, VADD, VSUB, VMUL,
+        VAND, VOR, VXOR, VPBROADCAST,
         SELECT,
         TRAP, UNREACHABLE, BSWAP
     };
@@ -54,6 +54,7 @@ namespace gbpp {
         std::vector<int> args;
         std::vector<int> argBytes;
         bool isVolatile = false;
+        SourceLoc loc = { "", 0, 0 };
 
         std::string getType() const {
             if (bytes == 1) return "i8";
@@ -178,24 +179,24 @@ namespace gbpp {
                     return destStr() + "fdiv " + typeStr + " v" + to_string(src1) + ", v" + to_string(src2);
                 case OpCode::SELECT:
                     return destStr() + "select cond:v" + to_string(src1) + " ? v" + to_string(src2) + " : v" + to_string(args[0]);
-                case OpCode::VLOAD256:
-                    return destStr() + "vload256 from [v" + to_string(src1) + "]";
-                case OpCode::VSTORE256:
-                    return "vstore256 v" + to_string(src2) + " into [v" + to_string(src1) + "]";
-                case OpCode::VPBROADCASTQ:
-                    return destStr() + "vpbroadcastq v" + to_string(src1);
-                case OpCode::VADD256:
-                    return destStr() + "vadd256 v" + to_string(src1) + ", v" + to_string(src2);
-                case OpCode::VSUB256:
-                    return destStr() + "vsub256 v" + to_string(src1) + ", v" + to_string(src2);
-                case OpCode::VMUL256:
-                    return destStr() + "vmul256 v" + to_string(src1) + ", v" + to_string(src2);
-                case OpCode::VAND256:
-                    return destStr() + "vand256 v" + to_string(src1) + ", v" + to_string(src2);
-                case OpCode::VOR256:
-                    return destStr() + "vor256 v" + to_string(src1) + ", v" + to_string(src2);
-                case OpCode::VXOR256:
-                    return destStr() + "vxor256 v" + to_string(src1) + ", v" + to_string(src2);
+                case OpCode::VLOAD:
+                    return destStr() + "vload (vec" + to_string(bytes * 8) + "x" + to_string(imm * 8) + ") from [v" + to_string(src1) + "]";
+                case OpCode::VSTORE:
+                    return "vstore (vec" + to_string(bytes * 8) + "x" + to_string(imm * 8) + ") v" + to_string(src2) + " into [v" + to_string(src1) + "]";
+                case OpCode::VPBROADCAST:
+                    return destStr() + "vpbroadcast (vec" + to_string(bytes * 8) + "x" + to_string(imm * 8) + ") v" + to_string(src1);
+                case OpCode::VADD:
+                    return destStr() + "vadd (vec" + to_string(bytes * 8) + "x" + to_string(imm * 8) + ") v" + to_string(src1) + ", v" + to_string(src2);
+                case OpCode::VSUB:
+                    return destStr() + "vsub (vec" + to_string(bytes * 8) + "x" + to_string(imm * 8) + ") v" + to_string(src1) + ", v" + to_string(src2);
+                case OpCode::VMUL:
+                    return destStr() + "vmul (vec" + to_string(bytes * 8) + "x" + to_string(imm * 8) + ") v" + to_string(src1) + ", v" + to_string(src2);
+                case OpCode::VAND:
+                    return destStr() + "vand (vec" + to_string(bytes * 8) + ") v" + to_string(src1) + ", v" + to_string(src2);
+                case OpCode::VOR:
+                    return destStr() + "vor (vec" + to_string(bytes * 8) + ") v" + to_string(src1) + ", v" + to_string(src2);
+                case OpCode::VXOR:
+                    return destStr() + "vxor (vec" + to_string(bytes * 8) + ") v" + to_string(src1) + ", v" + to_string(src2);
                 case OpCode::TRAP:
                     return "; trap (int3)";
                 case OpCode::UNREACHABLE:

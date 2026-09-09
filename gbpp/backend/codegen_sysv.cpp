@@ -465,6 +465,8 @@ namespace gbpp {
                             MachineInstr incInst;
                             incInst.opcode = MInstOpcode::X86_INC;
                             incInst.operands.push_back(inst.operands[0]);
+                            incInst.loc = inst.loc;
+                            incInst.ir_ref = inst.ir_ref;
                             newInsts.push_back(incInst);
                             changed = true;
                             continue;
@@ -870,6 +872,8 @@ namespace gbpp {
                 const Instruction* prevInst = nullptr;
 
                 for (const auto& inst : irBlock->instructions) {
+                    size_t startInstIdx = mb.insts.size();
+
                     switch (inst.op) {
                         case OpCode::GET_PARAM: {
                             int argIdx = inst.imm;
@@ -1498,42 +1502,89 @@ namespace gbpp {
                             mb.insts.push_back({ MInstOpcode::X86_RET, {} });
                             break;
                         }
-                        case OpCode::VADD256: {
-                            MachineOperand dst = resolveOp(inst.dest, 32);
-                            MachineOperand src1 = resolveOp(inst.src1, 32);
-                            MachineOperand src2 = resolveOp(inst.src2, 32);
-                            mb.insts.push_back({ MInstOpcode::X86_VPADDQ, { dst, src1, src2 } });
+                        case OpCode::VADD:
+                        case OpCode::VSUB:
+                        case OpCode::VMUL:
+                        case OpCode::VAND:
+                        case OpCode::VOR:
+                        case OpCode::VXOR: {
+                            MachineOperand dst = resolveOp(inst.dest, inst.bytes);
+                            MachineOperand src1 = resolveOp(inst.src1, inst.bytes);
+                            MachineOperand src2 = resolveOp(inst.src2, inst.bytes);
+
+                            MInstOpcode mop;
+                            if (inst.op == OpCode::VADD) mop = (inst.imm == 4) ? MInstOpcode::X86_VPADDD : MInstOpcode::X86_VPADDQ;
+                            else if (inst.op == OpCode::VSUB) mop = (inst.imm == 4) ? MInstOpcode::X86_VPSUBD : MInstOpcode::X86_VPSUBQ;
+                            else if (inst.op == OpCode::VMUL) mop = (inst.imm == 4) ? MInstOpcode::X86_VPMULLD : MInstOpcode::X86_VPMULUDQ;
+                            else if (inst.op == OpCode::VAND) mop = MInstOpcode::X86_VPAND;
+                            else if (inst.op == OpCode::VOR) mop = MInstOpcode::X86_VPOR;
+                            else mop = MInstOpcode::X86_VPXOR;
+
+                            MachineOperand safeDst = dst;
+                            MachineOperand safeSrc1 = src1;
+
+                            if (src1.isMem()) {
+                                safeSrc1 = MachineOperand::createReg(REG_R10, inst.bytes);
+                                mb.insts.push_back({ MInstOpcode::X86_VMOVDQU, { safeSrc1, src1 } });
+                            }
+                            if (dst.isMem()) {
+                                safeDst = MachineOperand::createReg(REG_R11, inst.bytes);
+                            }
+
+                            mb.insts.push_back({ mop, { safeDst, safeSrc1, src2 }, inst.toString(), inst.loc });
+
+                            if (dst.isMem()) {
+                                mb.insts.push_back({ MInstOpcode::X86_VMOVDQU, { dst, safeDst } });
+                            }
                             usesAVX = true;
                             break;
                         }
-                        case OpCode::VLOAD256: {
-                            MachineOperand dst = resolveOp(inst.dest, 32);
-                            MachineOperand srcMem = MachineOperand::createMem(resolveOp(inst.src1, 8).reg, 0, 32);
-                            mb.insts.push_back({ MInstOpcode::X86_MOVDQU, { dst, srcMem } });
+                        case OpCode::VLOAD: {
+                            MachineOperand dst = resolveOp(inst.dest, inst.bytes);
+                            MachineOperand srcMem = MachineOperand::createMem(resolveOp(inst.src1, 8).reg, 0, inst.bytes);
+                            if (dst.isMem()) {
+                                auto r10 = MachineOperand::createReg(REG_R10, inst.bytes);
+                                mb.insts.push_back({ MInstOpcode::X86_VMOVDQU, { r10, srcMem } });
+                                mb.insts.push_back({ MInstOpcode::X86_VMOVDQU, { dst, r10 } });
+                            }
+                            else {
+                                mb.insts.push_back({ MInstOpcode::X86_VMOVDQU, { dst, srcMem } });
+                            }
                             usesAVX = true;
                             break;
                         }
-                        case OpCode::VSTORE256: {
-                            MachineOperand dstMem = MachineOperand::createMem(resolveOp(inst.src1, 8).reg, 0, 32);
-                            MachineOperand src = resolveOp(inst.src2, 32);
-                            mb.insts.push_back({ MInstOpcode::X86_MOVDQU, { dstMem, src } });
+                        case OpCode::VSTORE: {
+                            MachineOperand dstMem = MachineOperand::createMem(resolveOp(inst.src1, 8).reg, 0, inst.bytes);
+                            MachineOperand src = resolveOp(inst.src2, inst.bytes);
+                            if (src.isMem()) {
+                                auto r10 = MachineOperand::createReg(REG_R10, inst.bytes);
+                                mb.insts.push_back({ MInstOpcode::X86_VMOVDQU, { r10, src } });
+                                mb.insts.push_back({ MInstOpcode::X86_VMOVDQU, { dstMem, r10 } });
+                            }
+                            else {
+                                mb.insts.push_back({ MInstOpcode::X86_VMOVDQU, { dstMem, src } });
+                            }
                             usesAVX = true;
                             break;
                         }
-                        case OpCode::VPBROADCASTQ: {
-                            MachineOperand dst = resolveOp(inst.dest, 32);
-                            MachineOperand src = resolveOp(inst.src1, 8);
+                        case OpCode::VPBROADCAST: {
+                            MachineOperand dst = resolveOp(inst.dest, inst.bytes);
+                            MachineOperand src = resolveOp(inst.src1, inst.imm);
                             if (src.isImm() || src.isMem()) {
-                                MachineOperand r10 = MachineOperand::createReg(REG_R10, 8);
-                                if (src.isImm()) {
-                                    mb.insts.push_back({ MInstOpcode::X86_MOVri, { r10, src } });
-                                }
-                                else {
-                                    mb.insts.push_back({ MInstOpcode::X86_MOVrm, { r10, src } });
-                                }
+                                MachineOperand r10 = MachineOperand::createReg(REG_R10, inst.imm);
+                                if (src.isImm()) mb.insts.push_back({ MInstOpcode::X86_MOVri, { r10, src } });
+                                else mb.insts.push_back({ MInstOpcode::X86_MOVrm, { r10, src } });
                                 src = r10;
                             }
-                            mb.insts.push_back({ MInstOpcode::X86_VPBROADCASTQ, { dst, src } });
+                            MInstOpcode mop = (inst.imm == 4) ? MInstOpcode::X86_VPBROADCASTD : MInstOpcode::X86_VPBROADCASTQ;
+                            if (dst.isMem()) {
+                                MachineOperand r11 = MachineOperand::createReg(REG_R11, inst.bytes);
+                                mb.insts.push_back({ mop, { r11, src } });
+                                mb.insts.push_back({ MInstOpcode::X86_VMOVDQU, { dst, r11 } });
+                            }
+                            else {
+                                mb.insts.push_back({ mop, { dst, src } });
+                            }
                             usesAVX = true;
                             break;
                         }
@@ -1595,46 +1646,6 @@ namespace gbpp {
                             }
                             break;
                         }
-                        case OpCode::VSUB256: {
-                            MachineOperand dst = resolveOp(inst.dest, 32);
-                            MachineOperand src1 = resolveOp(inst.src1, 32);
-                            MachineOperand src2 = resolveOp(inst.src2, 32);
-                            mb.insts.push_back({ MInstOpcode::X86_VPSUBQ, { dst, src1, src2 } });
-                            usesAVX = true;
-                            break;
-                        }
-                        case OpCode::VMUL256: {
-                            MachineOperand dst = resolveOp(inst.dest, 32);
-                            MachineOperand src1 = resolveOp(inst.src1, 32);
-                            MachineOperand src2 = resolveOp(inst.src2, 32);
-                            mb.insts.push_back({ MInstOpcode::X86_VPMULUDQ, { dst, src1, src2 } });
-                            usesAVX = true;
-                            break;
-                        }
-                        case OpCode::VAND256: {
-                            MachineOperand dst = resolveOp(inst.dest, 32);
-                            MachineOperand src1 = resolveOp(inst.src1, 32);
-                            MachineOperand src2 = resolveOp(inst.src2, 32);
-                            mb.insts.push_back({ MInstOpcode::X86_VPAND, { dst, src1, src2 } });
-                            usesAVX = true;
-                            break;
-                        }
-                        case OpCode::VOR256: {
-                            MachineOperand dst = resolveOp(inst.dest, 32);
-                            MachineOperand src1 = resolveOp(inst.src1, 32);
-                            MachineOperand src2 = resolveOp(inst.src2, 32);
-                            mb.insts.push_back({ MInstOpcode::X86_VPOR, { dst, src1, src2 } });
-                            usesAVX = true;
-                            break;
-                        }
-                        case OpCode::VXOR256: {
-                            MachineOperand dst = resolveOp(inst.dest, 32);
-                            MachineOperand src1 = resolveOp(inst.src1, 32);
-                            MachineOperand src2 = resolveOp(inst.src2, 32);
-                            mb.insts.push_back({ MInstOpcode::X86_VPXOR, { dst, src1, src2 } });
-                            usesAVX = true;
-                            break;
-                        }
                         case OpCode::TRAP: {
                             mb.insts.push_back({ MInstOpcode::X86_INT3, {} });
                             break;
@@ -1659,6 +1670,12 @@ namespace gbpp {
                         }
                         default: break;
                     }
+                    std::string irStr = inst.toString();
+                    for (size_t i = startInstIdx; i < mb.insts.size(); ++i) {
+                        mb.insts[i].ir_ref = irStr;
+                        mb.insts[i].loc = inst.loc;
+                    }
+
                     prevInst = &inst;
                     globalIdx++;
                 }

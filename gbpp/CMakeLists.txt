@@ -17,6 +17,7 @@ add_library(gbpp_lib
     backend/emitter_asm.cpp
     backend/emitter_coff.cpp
     backend/emitter_elf.cpp
+    backend/emitter_debug.cpp
 )
 
 target_include_directories(gbpp_lib PUBLIC include)

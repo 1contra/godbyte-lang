@@ -55,5 +55,6 @@ namespace gbpp {
         static std::unique_ptr<Emitter> createAsm();
         static std::unique_ptr<Emitter> createCoffWin64();
         static std::unique_ptr<Emitter> createElfSysV();
+        static std::unique_ptr<Emitter> createDebugDump();
     };
 }

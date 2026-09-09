@@ -1,4 +1,5 @@
 #pragma once
+#include "ir.hpp"
 #include <string>
 #include <vector>
 #include <cstdint>
@@ -62,9 +63,10 @@ namespace gbpp {
         X86_CMPrr, X86_CMPri, X86_CMPrm,
         X86_MOVSS, X86_MOVSD,
         X86_MOVAPS, X86_MOVUPS,
-        X86_MOVDQA, X86_MOVDQU, X86_VPADDQ, X86_VPSUBQ, X86_VPMULUDQ,
+        X86_MOVDQA, X86_MOVDQU,
+        X86_VPADDD, X86_VPADDQ, X86_VPSUBD, X86_VPSUBQ, X86_VPMULLD, X86_VPMULUDQ,
         X86_VPAND, X86_VPOR, X86_VPXOR,
-        X86_VPBROADCASTQ, X86_VZEROUPPER,
+        X86_VPBROADCASTD, X86_VPBROADCASTQ, X86_VMOVDQU, X86_VZEROUPPER,
         X86_ADDSS, X86_ADDSD,
         X86_SUBSS, X86_SUBSD,
         X86_MULSS, X86_MULSD,
@@ -88,6 +90,8 @@ namespace gbpp {
     struct MachineInstr {
         MInstOpcode opcode;
         std::vector<MachineOperand> operands;
+        std::string ir_ref = "";
+        SourceLoc loc = { "", 0, 0 };
     };
 
     struct MIRBasicBlock {

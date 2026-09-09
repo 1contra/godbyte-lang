@@ -172,6 +172,34 @@ namespace gbpp {
                 emitModRM(buf, digitId, dst);
             }
         }
+        else if (op == MInstOpcode::X86_IMULrr || op == MInstOpcode::X86_IMULrri) {
+            auto& dst = inst.operands[0];
+            auto& src = inst.operands[1];
+
+            if (dst.size == 2) buf.emit8(0x66);
+            emitRex(buf, dst.size == 8, dst.reg, src.isMem() ? src.mem.baseReg : src.reg);
+
+            if (op == MInstOpcode::X86_IMULrr) {
+                buf.emit8(0x0F);
+                buf.emit8(0xAF);
+                emitModRM(buf, dst.reg, src);
+            }
+            else {
+                auto& imm = inst.operands[2];
+                bool fitsIn8Bits = (int64_t)imm.imm >= -128 && (int64_t)imm.imm <= 127;
+
+                buf.emit8(fitsIn8Bits ? 0x6B : 0x69);
+                emitModRM(buf, dst.reg, src);
+
+                if (fitsIn8Bits) {
+                    buf.emit8(imm.imm & 0xFF);
+                }
+                else {
+                    if (dst.size == 2) buf.emit16(imm.imm & 0xFFFF);
+                    else buf.emit32(imm.imm & 0xFFFFFFFF);
+                }
+            }
+        }
         else if (op == MInstOpcode::X86_SHLr || op == MInstOpcode::X86_SHRr ||
             op == MInstOpcode::X86_SHLcl || op == MInstOpcode::X86_SHRcl) {
             auto& dst = inst.operands[0];
@@ -277,72 +305,70 @@ namespace gbpp {
         else if (op == MInstOpcode::X86_RET) { buf.emit8(0xC3); }
         else if (op == MInstOpcode::X86_LEAVE) { buf.emit8(0xC9); }
         else if (op == MInstOpcode::X86_CQO) { emitRex(buf, true, 0, 0); buf.emit8(0x99); }
-        else if (op == MInstOpcode::X86_VPADDQ || op == MInstOpcode::X86_VPSUBQ
-            || op == MInstOpcode::X86_VPMULUDQ || op == MInstOpcode::X86_VPAND
-            || op == MInstOpcode::X86_VPOR || op == MInstOpcode::X86_VPXOR
-        ) {
-            auto& dst = inst.operands[0];
-            auto& src1 = inst.operands[1];
-            auto& src2 = inst.operands[2];
-            int regDst = dst.reg & 7;
-            int regSrc1 = src1.reg & 0xF;
-            int regSrc2 = src2.reg & 7;
-            int r = (dst.reg >> 3) & 1;
-            int b = (src2.reg >> 3) & 1;
-
-            int map_select = 2;
-            uint8_t opc = 0;
-
-            if (op == MInstOpcode::X86_VPADDQ) opc = 0xD4;
-            else if (op == MInstOpcode::X86_VPSUBQ) opc = 0xFB;
-            else if (op == MInstOpcode::X86_VPMULUDQ) { map_select = 1; opc = 0xF4; }
-            else if (op == MInstOpcode::X86_VPAND) { map_select = 1; opc = 0xDB; }
-            else if (op == MInstOpcode::X86_VPOR) { map_select = 1; opc = 0xEB; }
-            else if (op == MInstOpcode::X86_VPXOR) { map_select = 1; opc = 0xEF; }
-
-            emitVEX(buf, false, r, 0, b, regSrc1, map_select, 1, 1);
-            buf.emit8(opc);
-            buf.emit8(0xC0 | (regDst << 3) | regSrc2);
-        }
-        else if (op == MInstOpcode::X86_MOVDQU) {
+        else if (op == MInstOpcode::X86_VMOVDQU) {
             auto& dst = inst.operands[0];
             auto& src = inst.operands[1];
-            if (dst.isReg() && src.isMem()) { // vmovdqu ymm, [mem]
-                int r = (dst.reg >> 3) & 1;
-                int b = (src.mem.baseReg >> 3) & 1;
-                emitVEX(buf, false, r, 0, b, 0, 1, 2, 1); // map=1 (0F), pp=2 (F3)
+            int L = (dst.size == 32 || src.size == 32) ? 1 : 0;
+            if (dst.isReg() && src.isMem()) { // vmovdqu ymm/xmm, [mem]
+                emitVEX(buf, false, (dst.reg >> 3) & 1, 0, (src.mem.baseReg >> 3) & 1, 0, 1, 2, L);
                 buf.emit8(0x6F);
                 emitModRM(buf, dst.reg, src);
             }
-            else if (dst.isMem() && src.isReg()) { // vmovdqu [mem], ymm
-                int r = (src.reg >> 3) & 1;
-                int b = (dst.mem.baseReg >> 3) & 1;
-                emitVEX(buf, false, r, 0, b, 0, 1, 2, 1);
+            else if (dst.isMem() && src.isReg()) { // vmovdqu [mem], ymm/xmm
+                emitVEX(buf, false, (src.reg >> 3) & 1, 0, (dst.mem.baseReg >> 3) & 1, 0, 1, 2, L);
                 buf.emit8(0x7F);
                 emitModRM(buf, src.reg, dst);
             }
         }
-        else if (op == MInstOpcode::X86_VPBROADCASTQ) {
-            auto& dst = inst.operands[0];
-            auto& src = inst.operands[1];
+        else if (op == MInstOpcode::X86_VPADDD || op == MInstOpcode::X86_VPADDQ
+            || op == MInstOpcode::X86_VPSUBD || op == MInstOpcode::X86_VPSUBQ
+            || op == MInstOpcode::X86_VPMULLD || op == MInstOpcode::X86_VPMULUDQ
+            || op == MInstOpcode::X86_VPAND || op == MInstOpcode::X86_VPOR
+            || op == MInstOpcode::X86_VPXOR
+        ) {
+            auto& dst = inst.operands[0]; auto& src1 = inst.operands[1]; auto& src2 = inst.operands[2];
+            int map_select = 1; uint8_t opc = 0; int pp = 1; // 66 prefix
 
-            int regDst = dst.reg & 7;
-            int regSrc = src.reg & 7;
+            if (op == MInstOpcode::X86_VPADDD) opc = 0xFE;
+            else if (op == MInstOpcode::X86_VPADDQ) opc = 0xD4;
+            else if (op == MInstOpcode::X86_VPSUBD) opc = 0xFA;
+            else if (op == MInstOpcode::X86_VPSUBQ) opc = 0xFB;
+            else if (op == MInstOpcode::X86_VPMULLD) { map_select = 2; opc = 0x40; } // 66 38 40
+            else if (op == MInstOpcode::X86_VPMULUDQ) opc = 0xF4;
+            else if (op == MInstOpcode::X86_VPAND) opc = 0xDB;
+            else if (op == MInstOpcode::X86_VPOR) opc = 0xEB;
+            else if (op == MInstOpcode::X86_VPXOR) opc = 0xEF;
 
-            // vmovq xmmDst, regSrc
-            buf.emit8(0x66);
-            emitRex(buf, true, dst.reg, src.reg);
-            buf.emit8(0x0F);
-            buf.emit8(0x6E);
-            buf.emit8(0xC0 | (regDst << 3) | regSrc);
-
-            // vpbroadcastq ymmDst, xmmDst
+            int L = (dst.size == 32) ? 1 : 0;
             int r = (dst.reg >> 3) & 1;
-            int b = (dst.reg >> 3) & 1;
+            int b = (src2.isReg()) ? ((src2.reg >> 3) & 1) : ((src2.mem.baseReg >> 3) & 1);
+            int vvvv = src1.reg & 0xF;
 
-            emitVEX(buf, false, r, 0, b, 0, 2, 1, 1);
-            buf.emit8(0x59);
-            buf.emit8(0xC0 | (regDst << 3) | regDst);
+            emitVEX(buf, false, r, 0, b, vvvv, map_select, pp, L);
+            buf.emit8(opc);
+            if (src2.isReg()) buf.emit8(0xC0 | ((dst.reg & 7) << 3) | (src2.reg & 7));
+            else emitModRM(buf, dst.reg, src2);
+        }
+        else if (op == MInstOpcode::X86_VPBROADCASTD || op == MInstOpcode::X86_VPBROADCASTQ) {
+            auto& dst = inst.operands[0]; auto& src = inst.operands[1];
+            int L = (dst.size == 32) ? 1 : 0;
+            uint8_t opc = (op == MInstOpcode::X86_VPBROADCASTD) ? 0x58 : 0x59;
+
+            if (src.isReg()) {
+                buf.emit8(0x66);
+                emitRex(buf, op == MInstOpcode::X86_VPBROADCASTQ, dst.reg, src.reg);
+                buf.emit8(0x0F);
+                buf.emit8(0x6E);
+                buf.emit8(0xC0 | ((dst.reg & 7) << 3) | (src.reg & 7));
+                emitVEX(buf, false, (dst.reg >> 3) & 1, 0, (dst.reg >> 3) & 1, 0, 2, 1, L);
+                buf.emit8(opc);
+                buf.emit8(0xC0 | ((dst.reg & 7) << 3) | (dst.reg & 7));
+            }
+            else {
+                emitVEX(buf, false, (dst.reg >> 3) & 1, 0, (src.mem.baseReg >> 3) & 1, 0, 2, 1, L);
+                buf.emit8(opc);
+                emitModRM(buf, dst.reg, src);
+            }
         }
         else if (op == MInstOpcode::X86_VZEROUPPER) {
             buf.emit8(0xC5); buf.emit8(0xF8); buf.emit8(0x77);
