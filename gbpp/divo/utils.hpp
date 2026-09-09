@@ -393,22 +393,24 @@ public:
             size_t pos = fullName.rfind("::");
             return pos != std::string::npos ? fullName.substr(pos + 2) : fullName;
         };
-
-        auto hasExport = [](std::vector<gbpp::Attribute>& attrs) {
-            if (hasAttribute(attrs, gbpp::AttrKind::Export)) return true;
+        auto hasExport = [](const std::vector<gbpp::Attribute>& attrs) {
+            for (const auto& attr : attrs) {
+                if (attr.kind == gbpp::AttrKind::Export) return true;
+            }
             return false;
         };
 
+        std::map<std::string, std::vector<gbpp::AliasDecl*>> aliasesByNs;
         std::map<std::string, std::vector<gbpp::EnumDecl*>> enumsByNs;
         std::map<std::string, std::vector<gbpp::StructDecl*>> structsByNs;
         std::map<std::string, std::vector<gbpp::FunctionDecl*>> funcsByNs;
+        std::map<std::string, std::vector<gbpp::VarDecl*>> varsByNs;
 
-        for (auto& e : prog->enums) {
-            if (hasExport(e->attributes)) enumsByNs[getNs(e->name)].push_back(e.get());
-        }
-        for (auto& s : prog->structs) {
-            if (hasExport(s->attributes)) structsByNs[getNs(s->name)].push_back(s.get());
-        }
+        for (auto& a : prog->aliases) if (hasExport(a->attributes)) aliasesByNs[getNs(a->name)].push_back(a.get());
+        for (auto& e : prog->enums) if (hasExport(e->attributes)) enumsByNs[getNs(e->name)].push_back(e.get());
+        for (auto& s : prog->structs) if (hasExport(s->attributes)) structsByNs[getNs(s->name)].push_back(s.get());
+        for (auto& v : prog->globalVars) if (hasExport(v->attributes)) varsByNs[getNs(v->name)].push_back(v.get());
+
         for (auto& f : prog->functions) {
             if (hasExport(f->attributes)) {
                 funcsByNs[getNs(f->name)].push_back(f.get());
@@ -419,22 +421,22 @@ public:
                 bool belongsToExportedStruct = false;
                 for (auto& s : prog->structs) {
                     if (hasExport(s->attributes) && getNs(s->name) == fns) {
-                        if (fname.starts_with(getName(s->name) + "_")) {
+                        if (fname.starts_with(getName(s->name) + "_") || fname.starts_with(getName(s->name) + "::")) {
                             belongsToExportedStruct = true;
                             break;
                         }
                     }
                 }
-                if (belongsToExportedStruct) {
-                    funcsByNs[fns].push_back(f.get());
-                }
+                if (belongsToExportedStruct) funcsByNs[fns].push_back(f.get());
             }
         }
 
         std::set<std::string> namespaces;
+        for (auto& kv : aliasesByNs) namespaces.insert(kv.first);
         for (auto& kv : enumsByNs) namespaces.insert(kv.first);
         for (auto& kv : structsByNs) namespaces.insert(kv.first);
         for (auto& kv : funcsByNs) namespaces.insert(kv.first);
+        for (auto& kv : varsByNs) namespaces.insert(kv.first);
 
         for (const auto& ns : namespaces) {
             std::vector<std::string> nsParts;
@@ -451,32 +453,29 @@ public:
                 indent += "    ";
             }
 
+            for (auto a : aliasesByNs[ns]) {
+                out << indent << "[[@extern]]\n" << indent << "alias " << getName(a->name) << " = " << a->targetType.toString() << ";\n\n";
+            }
             for (auto e : enumsByNs[ns]) {
-                out << indent << "[[@extern]]\n";
-                out << indent << "enum " << getName(e->name) << " {\n";
-                for (auto& m : e->members) {
-                    out << indent << "    " << m.name << " = " << m.value << ",\n";
-                }
+                out << indent << "[[@extern]]\n" << indent << "enum " << getName(e->name) << " {\n";
+                for (auto& m : e->members) out << indent << "    " << m.name << " = " << m.value << ",\n";
                 out << indent << "};\n\n";
             }
-
             for (auto s : structsByNs[ns]) {
-                out << indent << "[[@extern]]\n";
-                out << indent << "struct " << getName(s->name) << " {\n";
-                for (auto& f : s->fields) {
-                    out << indent << "    " << f.name << ": " << f.parsedType.toString() << ";\n";
-                }
+                out << indent << "[[@extern]]\n" << indent << "struct " << getName(s->name) << " {\n";
+                for (auto& f : s->fields) out << indent << "    " << f.name << ": " << f.parsedType.toString() << ";\n";
                 out << indent << "};\n\n";
             }
-
+            for (auto v : varsByNs[ns]) {
+                out << indent << "[[@extern]]\n" << indent << "const " << getName(v->name) << ": " << v->parsedType.toString() << ";\n\n";
+            }
             for (auto f : funcsByNs[ns]) {
-                out << indent << "[[@extern]]\n";
-                out << indent << "fn " << getName(f->name) << "(";
+                out << indent << "[[@extern]]\n" << indent << "fn " << getName(f->name) << "(";
                 for (size_t i = 0; i < f->params.size(); ++i) {
                     out << f->params[i].name << ": " << f->params[i].parsedType.toString();
                     if (i + 1 < f->params.size()) out << ", ";
                 }
-                out << "): " << f->returnType.toString() << ";\n\n";
+                out << "): " << (f->returnType.baseName.empty() ? "void" : f->returnType.toString()) << ";\n\n";
             }
 
             for (int i = (int)nsParts.size() - 1; i >= 0; --i) {
@@ -485,6 +484,5 @@ public:
             }
             if (!nsParts.empty()) out << "\n";
         }
-        out.close();
     }
 };

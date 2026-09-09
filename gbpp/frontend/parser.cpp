@@ -38,7 +38,6 @@ namespace gbpp {
 
     int64_t Parser::evaluateComptimeExpr(Expr* expr) {
         if (!expr) return 0;
-
         if (auto lit = dynamic_cast<IntLiteral*>(expr)) {
             try {
                 std::string txt = lit->value;
@@ -47,49 +46,32 @@ namespace gbpp {
             }
             catch (...) { return 0; }
         }
-
         if (auto hasMeth = dynamic_cast<CompilerHasMethodExpr*>(expr)) {
             return 1;
         }
-
         if (auto var = dynamic_cast<VarExpr*>(expr)) {
             if (m_comptimeVars.count(var->name)) {
-
                 if (var->name.starts_with("__")) {
                     std::string diagnosticMsg = "Line " + std::to_string(var->loc.line) + ":" +
                         std::to_string(var->loc.col) +
                         " - Warning: Legacy compile macro '" + var->name +
                         "' is deprecated. Use 'compiler.target' configuration rules instead.";
-
                     if (this->warnings.empty() || this->warnings.back() != diagnosticMsg) {
                         this->warnings.push_back(diagnosticMsg);
                         std::cerr << diagnosticMsg << "\n";
                     }
                 }
-
                 return m_comptimeVars[var->name];
             }
             throw std::runtime_error("Line " + std::to_string(var->loc.line) + ":" +
                 std::to_string(var->loc.col) +
                 " - Comptime Error: Undefined configuration variable '" + var->name + "'");
         }
-
-        if (auto ea = dynamic_cast<EnumAccessExpr*>(expr)) {
-            std::string fullName = ea->enumName + "::" + ea->memberName;
-            if (m_comptimeVars.count(fullName)) {
-                return m_comptimeVars[fullName];
-            }
-            throw std::runtime_error("Line " + std::to_string(ea->loc.line) + ":" +
-                std::to_string(ea->loc.col) +
-                " - Comptime Error: Unresolved enum member '" + fullName + "'");
-        }
-
         if (auto un = dynamic_cast<UnaryExpr*>(expr)) {
             int64_t val = evaluateComptimeExpr(un->operand.get());
             if (un->op == TokenType::Bang) return !val;
             if (un->op == TokenType::Minus) return -val;
         }
-
         if (auto bin = dynamic_cast<BinaryExpr*>(expr)) {
             int64_t l = evaluateComptimeExpr(bin->left.get());
             int64_t r = evaluateComptimeExpr(bin->right.get());
@@ -107,18 +89,15 @@ namespace gbpp {
             default: return 0;
             }
         }
-
         if (auto cif = dynamic_cast<ComptimeIfExpr*>(expr)) {
             int64_t condVal = evaluateComptimeExpr(cif->condition.get());
             if (condVal != 0 && cif->thenExpr) return evaluateComptimeExpr(cif->thenExpr.get());
             else if (condVal == 0 && cif->elseExpr) return evaluateComptimeExpr(cif->elseExpr.get());
             return 0;
         }
-
         if (auto le = dynamic_cast<LockExpr*>(expr)) {
             return evaluateComptimeExpr(le->operand.get());
         }
-
         return 0;
     }
 
@@ -446,6 +425,9 @@ namespace gbpp {
 
                 if (match(TokenType::Namespace)) {
                     std::string nsName = consume(TokenType::Identifier, "Expect namespace name").text;
+                    while (match(TokenType::DoubleColon)) {
+                        nsName += "::" + consume(TokenType::Identifier, "Expect namespace name part").text;
+                    }
                     consume(TokenType::LBrace, "Expect '{' after namespace name");
                     nsStack.push_back(currentNamespace);
                     currentNamespace = currentNamespace.empty() ? nsName : currentNamespace + "::" + nsName;
@@ -599,7 +581,12 @@ namespace gbpp {
                 else if (match(TokenType::Operator)) {
                     auto fn = parseOperator();
                     fn->attributes = std::move(pendingAttrs);
-                    if (!currentNamespace.empty()) fn->name = currentNamespace + "::" + fn->name;
+                    if (!currentNamespace.empty()) {
+                        fn->name = currentNamespace + "::" + fn->name;
+                        if (!fn->parentStructName.empty() && !fn->parentStructName.starts_with(currentNamespace + "::")) {
+                            fn->parentStructName = currentNamespace + "::" + fn->parentStructName;
+                        }
+                    }
                     program->functions.push_back(std::move(fn));
                 }
                 else if (match(TokenType::Fn)) {
@@ -611,7 +598,16 @@ namespace gbpp {
                 else if (match(TokenType::Struct)) {
                     auto st = parseStruct();
                     st->attributes = std::move(pendingAttrs);
-                    if (!currentNamespace.empty()) st->name = currentNamespace + "::" + st->name;
+                    if (!currentNamespace.empty()) {
+                        st->name = currentNamespace + "::" + st->name;
+                        for (auto& m : st->methods) {
+                            m->name = currentNamespace + "::" + m->name;
+                            // teehee
+                            if (!m->parentStructName.empty() && !m->parentStructName.starts_with(currentNamespace + "::")) {
+                                m->parentStructName = currentNamespace + "::" + m->parentStructName;
+                            }
+                        }
+                    }
                     for (auto& m : st->methods) program->functions.push_back(std::move(m));
                     program->structs.push_back(std::move(st));
                 }
@@ -773,6 +769,7 @@ namespace gbpp {
                 while (!check(TokenType::RBrace) && !isAtEnd()) {
                     try {
                         std::vector<Attribute> pendingAttrs = parseAttributes();
+                        if (check(TokenType::Fn)) advance();
                         auto methodDecl = parseFunction();
                         methodDecl->attributes = std::move(pendingAttrs);
                         methodDecl->genericParams = st->genericParams;
@@ -1129,8 +1126,10 @@ namespace gbpp {
         auto expr = parseLogicalAnd();
         while (match(TokenType::PipePipe)) {
             TokenType op = previous().type;
+            SourceLoc opLoc = previous().loc;
             auto right = parseLogicalAnd();
             auto bin = std::make_unique<BinaryExpr>();
+            bin->loc = opLoc;
             bin->left = std::move(expr);
             bin->op = op;
             bin->right = std::move(right);
@@ -1287,7 +1286,9 @@ namespace gbpp {
             expr = std::move(deref);
         }
         else if (match(TokenType::Null)) {
-            expr = std::make_unique<NullLiteral>();
+            auto lit = std::make_unique<NullLiteral>();
+            lit->loc = previous().loc;
+            expr = std::move(lit);
         }
         else if (match(TokenType::BuiltinMemfill) || match(TokenType::BuiltinMemcpy) ||
             match(TokenType::BuiltinTrap) || match(TokenType::BuiltinBswap) ||
@@ -1317,16 +1318,13 @@ namespace gbpp {
             consume(TokenType::LParen, "Expect '('");
             auto condExpr = parseExpression();
             consume(TokenType::RParen, "Expect ')'");
-
             bool isTrue = evaluateComptimeExpr(condExpr.get()) != 0;
             std::unique_ptr<Expr> resultExpr = nullptr;
-
             if (isTrue) {
                 consume(TokenType::LBrace, "Expect '{'");
                 resultExpr = parseExpression();
                 if (check(TokenType::Semicolon) && peek(1).type == TokenType::RBrace) advance();
                 consume(TokenType::RBrace, "Expect '}'");
-
                 while (match(TokenType::Else)) {
                     if (match(TokenType::If) || check(TokenType::LParen)) {
                         consume(TokenType::LParen, "Expect '('");
@@ -1340,14 +1338,12 @@ namespace gbpp {
             else {
                 consume(TokenType::LBrace, "Expect '{'");
                 skipBlock();
-
                 bool foundTrue = false;
                 while (match(TokenType::Else)) {
                     if (match(TokenType::If) || check(TokenType::LParen)) {
                         consume(TokenType::LParen, "Expect '('");
                         auto elifCond = parseExpression();
                         consume(TokenType::RParen, "Expect ')'");
-
                         if (!foundTrue && evaluateComptimeExpr(elifCond.get()) != 0) {
                             consume(TokenType::LBrace, "Expect '{'");
                             resultExpr = parseExpression();
@@ -1398,6 +1394,12 @@ namespace gbpp {
             lit->value = previous().text;
             expr = std::move(lit);
         }
+        else if (match(TokenType::Ampersand)) {
+            auto addr = std::make_unique<AddrOfExpr>();
+            addr->loc = previous().loc;
+            addr->operand = parsePrimary();
+            expr = std::move(addr);
+        }
         else if (match(TokenType::Sizeof)) {
             consume(TokenType::LT, "Expect '<' after sizeof");
             ParsedType pt = parseType();
@@ -1424,13 +1426,15 @@ namespace gbpp {
         }
         else if (match(TokenType::IntLiteral)) {
             auto lit = std::make_unique<IntLiteral>();
+            lit->loc = previous().loc;
             lit->value = previous().text;
             expr = std::move(lit);
         }
-        else if (match(TokenType::Ampersand)) {
-            auto addr = std::make_unique<AddrOfExpr>();
-            addr->operand = parsePrimary();
-            expr = std::move(addr);
+        else if (match(TokenType::FloatLiteral)) {
+            auto lit = std::make_unique<FloatLiteral>();
+            lit->loc = previous().loc;
+            lit->value = previous().text;
+            expr = std::move(lit);
         }
         else if (match(TokenType::Cast) || match(TokenType::CastBits)) {
             auto kind = (previous().type == TokenType::Cast) ? CastKind::Value : CastKind::Bits;

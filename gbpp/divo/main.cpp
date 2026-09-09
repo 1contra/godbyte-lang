@@ -258,6 +258,7 @@ void cmdBuild(int argc, char* argv[]) {
     }
 
     std::string targetName = config.activeTarget;
+    std::string typeOverride = "";
     bool dumpIr = false;
     bool dumpAsm = false;
     bool dumpDebug = false;
@@ -268,6 +269,7 @@ void cmdBuild(int argc, char* argv[]) {
     for (int i = 2; i < argc; ++i) {
         std::string arg = argv[i];
         if (arg.starts_with("--target=")) targetName = arg.substr(9);
+        else if (arg.starts_with("--type=")) typeOverride = arg.substr(7);
         else if (arg == "--ir=true" || arg == "--ir") dumpIr = true;
         else if (arg == "--asm=true" || arg == "--asm") dumpAsm = true;
         else if (arg == "--debug" || arg == "--db") dumpDebug = true;
@@ -282,6 +284,7 @@ void cmdBuild(int argc, char* argv[]) {
     }
 
     divo::TargetConfig target = config.targets[targetName];
+    if (!typeOverride.empty()) target.type = typeOverride;
 
     std::string profile = enableOpt ? "release" : "debug";
     std::string targetTriple = target.arch + "-" + target.os;
@@ -365,7 +368,17 @@ void cmdBuild(int argc, char* argv[]) {
     std::string objExt = (target.os == "linux") ? ".o" : ".obj";
     std::string projectObjPath = objDir + "/" + config.projectName + objExt;
     std::string hashPath = cacheDir + "/project.hash";
-    std::string targetExe = targetBase + "/" + fs::path(target.out).filename().string();
+
+    std::string outExt = "";
+    if (target.type == "static") outExt = (target.os == "linux") ? ".a" : ".lib";
+    else if (target.type == "dynamic") outExt = (target.os == "linux") ? ".so" : ".dll";
+    else if (target.type == "object") outExt = (target.os == "linux") ? ".o" : ".obj";
+    else if (target.type == "executable") outExt = (target.os == "linux") ? "" : ".exe";
+    else outExt = ".bin";
+
+    std::string targetExe = (target.type == "object")
+        ? projectObjPath
+        : (targetBase + "/" + fs::path(target.out).stem().string() + outExt);
 
     bool needsLink = false;
     bool rebuild = true;
@@ -450,48 +463,81 @@ void cmdBuild(int argc, char* argv[]) {
     else {
         divo::print_group("Linking Phase");
 
+        if (target.os != "linux" && target.type != "object") {
+            if (!divo::setupMsvcEnvironment()) {
+                divo::print_item_warn("Could not reliably detect MSVC PATH. Ensure C++ Build Tools are installed.");
+            }
+        }
+
         if (target.arch == "x64") {
             std::string mapFile = targetBase + "/" + config.projectName + ".map";
             std::string pdbFile = targetBase + "/" + config.projectName + ".pdb";
 
-            std::string dynamicLinkFlags = "";
-            for (const auto& dep : config.dependencies) {
-                if (divo::LibraryRegistry.count(dep)) {
-                    auto& libInfo = divo::LibraryRegistry[dep];
-                    dynamicLinkFlags += " " + ((target.os == "linux") ? libInfo.linkFlagsLin : libInfo.linkFlagsWin);
-                }
-                else {
-                    dynamicLinkFlags += (target.os == "linux") ? (" libs/lib" + dep + ".a") : (" libs\\" + dep + ".lib");
-                }
-            }
+            if (target.type == "object") {
+                divo::print_item("Object compilation complete -> " + projectObjPath);
+            } else if (target.type == "static") {
+                std::string linkCmd = (target.os == "linux")
+                    ? "ar rcs \"" + targetExe + "\" \"" + projectObjPath + "\""
+                    : "lib /nologo /out:\"" + targetExe + "\" \"" + projectObjPath + "\"";
 
-            std::string linkCmd;
-            if (target.os == "linux") {
-                linkCmd = "gcc \"" + projectObjPath + "\" " + dynamicLinkFlags + " " + customLinkArgs + " -g -Wl,-Map=" + mapFile + " -no-pie -o " + targetExe;
-            }
-            else {
-                if (!divo::setupMsvcEnvironment()) {
-                    divo::print_item_warn("Could not reliably detect MSVC PATH. Ensure C++ Build Tools are installed.");
+                divo::print_item("Archiving static library -> " + targetExe);
+                if (divo::runCmd(linkCmd) != 0) { divo::print_item_err("Archiver failed."); return; }
+            } else if (target.type == "dynamic") {
+                std::string dynamicLinkFlags = "";
+                for (const auto& dep : config.dependencies) {
+                    if (divo::LibraryRegistry.count(dep)) {
+                        auto& libInfo = divo::LibraryRegistry[dep];
+                        dynamicLinkFlags += " " + ((target.os == "linux") ? libInfo.linkFlagsLin : libInfo.linkFlagsWin);
+                    }
+                    else {
+                        dynamicLinkFlags += (target.os == "linux") ? (" libs/lib" + dep + ".a") : (" libs\\" + dep + ".lib");
+                    }
                 }
+                std::string linkCmd = (target.os == "linux")
+                    ? "gcc -shared \"" + projectObjPath + "\" " + dynamicLinkFlags + " " + customLinkArgs + " -o \"" + targetExe + "\""
+                    : "link /DLL \"" + projectObjPath + "\" " + dynamicLinkFlags + " " + customLinkArgs + " /nologo /out:\"" + targetExe + "\"";
 
-                std::string debugFlags = enableOpt ? "" : " /DEBUG /PDB:" + pdbFile;
-                std::string mapFlags = " /MAP:" + mapFile;
-
-                if (tinyBuild) {
-                    linkCmd = "link \"" + projectObjPath + "\" " + dynamicLinkFlags + " " + customLinkArgs + mapFlags + " /nologo /out:" + targetExe;
+                divo::print_item("Linking dynamic library -> " + targetExe);
+                if (divo::runCmd(linkCmd) != 0) { divo::print_item_err("Dynamic Linker failed."); return; }
+            } else if (target.type == "executable") {
+                std::string dynamicLinkFlags = "";
+                for (const auto& dep : config.dependencies) {
+                    if (divo::LibraryRegistry.count(dep)) {
+                        auto& libInfo = divo::LibraryRegistry[dep];
+                        dynamicLinkFlags += " " + ((target.os == "linux") ? libInfo.linkFlagsLin : libInfo.linkFlagsWin);
+                    }
+                    else {
+                        dynamicLinkFlags += (target.os == "linux") ? (" libs/lib" + dep + ".a") : (" libs\\" + dep + ".lib");
+                    }
                 }
-                else {
-                    linkCmd = "link \"" + projectObjPath + "\" " + dynamicLinkFlags + " " + customLinkArgs + mapFlags + debugFlags + " /subsystem:console /defaultlib:vcruntime /nologo /out:" + targetExe;
+                std::string linkCmd;
+                if (target.os == "linux") {
+                    linkCmd = "gcc \"" + projectObjPath + "\" " + dynamicLinkFlags + " " + customLinkArgs + " -g -Wl,-Map=" + mapFile + " -no-pie -o " + targetExe;
+                } else {
+                    if (!divo::setupMsvcEnvironment()) divo::print_item_warn("Could not reliably detect MSVC PATH.");
+                    std::string debugFlags = enableOpt ? "" : " /DEBUG /PDB:" + pdbFile;
+                    if (tinyBuild) {
+                        linkCmd = "link \"" + projectObjPath + "\" " + dynamicLinkFlags + " " + customLinkArgs + " /MAP:" + mapFile + " /nologo /out:" + targetExe;
+                    }
+                    else {
+                        linkCmd = "link \"" + projectObjPath + "\" " + dynamicLinkFlags + " " + customLinkArgs + " /MAP:" + mapFile + debugFlags + " /subsystem:console /defaultlib:vcruntime /nologo /out:" + targetExe;
+                    }
                 }
-            }
-
-            divo::print_item("Linking executable -> " + targetExe);
-            if (divo::runCmd(linkCmd) != 0) {
-                divo::print_item_err("Linker failed.");
-                return;
+                divo::print_item("Linking executable -> " + targetExe);
+                if (divo::runCmd(linkCmd) != 0) {
+                    divo::print_item_err("Linker failed.");
+                    return;
+                }
             }
         }
     }
+
+    if (target.type == "static" || target.type == "dynamic" || target.type == "object") {
+        std::string interfacePath = targetBase + "/" + config.projectName + "_api.gbpp";
+        InterfaceGenerator::generate(&mergedProgram, interfacePath);
+        divo::print_item("Generated ABI Interface -> " + interfacePath);
+    }
+
     recordTiming("Linker", t_codegen);
 
     std::ofstream timingsFile(logsDir + "/timings.json");

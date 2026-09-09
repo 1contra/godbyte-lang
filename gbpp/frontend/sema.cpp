@@ -4,10 +4,40 @@
 #include <set>
 
 namespace gbpp {
-
     static int s_loopDepth = 0;
-
     thread_local std::vector<std::map<std::string, std::vector<Attribute>>> t_attrScopes;
+    thread_local std::string t_currentNamespace = "";
+
+    static std::string extractNamespace(const std::string& fullName) {
+        size_t pos = fullName.rfind("::");
+        if (pos != std::string::npos) {
+            return fullName.substr(0, pos);
+        }
+        return "";
+    }
+
+    static std::vector<std::string> getNamespaceCandidates(const std::string& name) {
+        std::vector<std::string> candidates;
+        if (name.empty()) return candidates;
+        if (name.starts_with("::")) {
+            candidates.push_back(name.substr(2));
+            return candidates;
+        }
+        std::string ns = t_currentNamespace;
+        while (!ns.empty()) {
+            candidates.push_back(ns + "::" + name);
+            size_t pos = ns.rfind("::");
+            if (pos != std::string::npos) {
+                ns = ns.substr(0, pos);
+            }
+            else {
+                ns = "";
+            }
+        }
+        candidates.push_back(name);
+        return candidates;
+    }
+
     static void checkDeprecation(Sema* sema, const std::vector<Attribute>& attrs, SourceLoc loc, const std::string& name) {
         for (const auto& attr : attrs) {
             if (attr.kind == AttrKind::Deprecated) {
@@ -104,9 +134,26 @@ namespace gbpp {
             }
         }
 
+        for (auto& st : prog.structs) {
+            if (st->genericParams.empty()) {
+                std::string savedNs = t_currentNamespace;
+                t_currentNamespace = extractNamespace(st->name); 
+                int runningOffset = 0;
+                for (auto& field : st->fields) {
+                    if (field.offset == 0 && runningOffset != 0) field.offset = runningOffset;
+                    Type* fieldType = resolveType(field.parsedType);
+                    int fieldSize = fieldType ? fieldType->sizeBytes : 8;
+                    runningOffset = std::max(runningOffset, field.offset) + fieldSize;
+                }
+                t_currentNamespace = savedNs;
+            }
+        }
+
         size_t sigIdx = 0;
         while (sigIdx < m_pending_function_checks.size()) {
             FunctionDecl* fn = m_pending_function_checks[sigIdx];
+            std::string savedNs = t_currentNamespace;
+            t_currentNamespace = extractNamespace(fn->name);
             if (!fn->signatureType) {
                 fn->signatureType = std::make_unique<Type>(Type{ ScalarType::FunctionPtr, fn->name + "_sig", 8 });
                 for (auto& param : fn->params) {
@@ -116,35 +163,25 @@ namespace gbpp {
                 fn->returnTypeResolved = resolveType(fn->returnType);
                 if (!fn->returnTypeResolved) fn->returnTypeResolved = &TypeVoid;
             }
+            t_currentNamespace = savedNs;
             sigIdx++;
         }
 
         for (auto& v : prog.globalVars) {
             m_globalVars[v->name] = v.get();
+            std::string savedNs = t_currentNamespace;
+            t_currentNamespace = extractNamespace(v->name);
             checkStmt(*v);
-        }
-
-        for (auto& st : prog.structs) {
-            if (st->genericParams.empty()) {
-                int runningOffset = 0;
-                for (auto& field : st->fields) {
-                    if (field.offset > 0 && field.offset < runningOffset) {
-                        //error(st->loc, "Struct field overlap detected in '" + st->name + "'.");
-                    }
-
-                    if (field.offset == 0 && runningOffset != 0) field.offset = runningOffset;
-
-                    Type* fieldType = resolveType(field.parsedType);
-                    int fieldSize = fieldType ? fieldType->sizeBytes : 8;
-                    runningOffset = std::max(runningOffset, field.offset) + fieldSize;
-                }
-            }
+            t_currentNamespace = savedNs;
         }
 
         size_t checkIdx = 0;
         while (checkIdx < m_pending_function_checks.size()) {
             FunctionDecl* fn = m_pending_function_checks[checkIdx];
+            std::string savedNs = t_currentNamespace; 
+            t_currentNamespace = extractNamespace(fn->name);
             checkFunction(*fn);
+            t_currentNamespace = savedNs;
             checkIdx++;
         }
 
@@ -203,16 +240,19 @@ namespace gbpp {
         for (auto prog : progs) {
             for (auto& st : prog->structs) {
                 if (st->genericParams.empty()) {
+                    std::string savedNs = t_currentNamespace;
+                    t_currentNamespace = extractNamespace(st->name);
                     int runningOffset = 0;
                     for (auto& field : st->fields) {
                         if (field.offset > 0 && field.offset < runningOffset) {
-                            error(st->loc, "Struct field overlap detected in '" + st->name + "'.");
+                            // error(st->loc, "Struct field overlap detected in '" + st->name + "'.");
                         }
                         if (field.offset == 0 && runningOffset != 0) field.offset = runningOffset;
                         Type* fieldType = resolveType(field.parsedType);
                         int fieldSize = fieldType ? fieldType->sizeBytes : 8;
                         runningOffset = std::max(runningOffset, field.offset) + fieldSize;
                     }
+                    t_currentNamespace = savedNs;
                 }
             }
         }
@@ -220,34 +260,40 @@ namespace gbpp {
         size_t sigIdx = 0;
         while (sigIdx < m_pending_function_checks.size()) {
             FunctionDecl* fn = m_pending_function_checks[sigIdx];
+            std::string savedNs = t_currentNamespace;
+            t_currentNamespace = extractNamespace(fn->name);
             if (!fn->signatureType) {
                 fn->signatureType = std::make_unique<Type>(
                     Type{ ScalarType::FunctionPtr, fn->name + "_sig", 8 }
                 );
-
                 for (auto& param : fn->params) {
                     param.resolvedType = resolveType(param.parsedType);
                     fn->signatureType->paramTypes.push_back(param.resolvedType);
                 }
-
                 fn->returnTypeResolved = resolveType(fn->returnType);
                 if (!fn->returnTypeResolved)
                     fn->returnTypeResolved = &TypeVoid;
             }
-
+            t_currentNamespace = savedNs;
             sigIdx++;
         }
 
         for (auto prog : progs) {
             for (auto& v : prog->globalVars) {
+                std::string savedNs = t_currentNamespace;
+                t_currentNamespace = extractNamespace(v->name);
                 checkStmt(*v);
+                t_currentNamespace = savedNs;
             }
         }
 
         size_t checkIdx = 0;
         while (checkIdx < m_pending_function_checks.size()) {
             FunctionDecl* fn = m_pending_function_checks[checkIdx];
+            std::string savedNs = t_currentNamespace;
+            t_currentNamespace = extractNamespace(fn->name);
             checkFunction(*fn);
+            t_currentNamespace = savedNs;
             checkIdx++;
         }
 
@@ -274,8 +320,17 @@ namespace gbpp {
     Type* Sema::resolveType(const ParsedType& pt) {
         ParsedType actual = pt;
 
-        while (m_aliases.count(actual.baseName)) {
-            ParsedType target = m_aliases[actual.baseName];
+        auto findAlias = [&](const std::string& name) -> std::string {
+            if (m_aliases.count(name)) return name;
+            for (const auto& cand : getNamespaceCandidates(name)) {
+                if (m_aliases.count(cand)) return cand;
+            }
+            return "";
+        };
+
+        std::string aliasKey = findAlias(actual.baseName);
+        while (!aliasKey.empty()) {
+            ParsedType target = m_aliases[aliasKey];
             actual.baseName = target.baseName;
             actual.genericArgs = target.genericArgs;
             actual.isFunction = target.isFunction;
@@ -292,6 +347,7 @@ namespace gbpp {
                 actual.isArray = true;
                 actual.arraySizeExpr = target.arraySizeExpr;
             }
+            aliasKey = findAlias(actual.baseName);
         }
 
         if (actual.isFunction) {
@@ -332,6 +388,17 @@ namespace gbpp {
             }
             actual.genericArgs.clear();
         }
+
+        std::string resolvedBName = bName;
+        if (!m_structs.count(bName) && !m_enums.count(bName) && !m_generic_structs.count(bName)) {
+            for (const auto& cand : getNamespaceCandidates(bName)) {
+                if (m_structs.count(cand) || m_enums.count(cand) || m_generic_structs.count(cand)) {
+                    resolvedBName = cand;
+                    break;
+                }
+            }
+        }
+        bName = resolvedBName;
 
         Type* baseType = nullptr;
 
@@ -522,9 +589,6 @@ namespace gbpp {
         }
         if (auto addr = dynamic_cast<AddrOfExpr*>(e)) {
             auto res = std::make_unique<AddrOfExpr>(); res->loc = addr->loc; res->operand = cloneExpr(addr->operand.get(), subs); return res;
-        }
-        if (auto ea = dynamic_cast<EnumAccessExpr*>(e)) {
-            auto res = std::make_unique<EnumAccessExpr>(); res->loc = ea->loc; res->enumName = ea->enumName; res->memberName = ea->memberName; return res;
         }
         if (auto sf = dynamic_cast<SelfFieldExpr*>(e)) {
             auto res = std::make_unique<SelfFieldExpr>(); res->loc = sf->loc; res->fieldName = sf->fieldName; return res;
@@ -876,52 +940,32 @@ namespace gbpp {
         else if (auto nullLit = dynamic_cast<NullLiteral*>(&expr)) {
             nullLit->type = &TypeNull;
         }
-        else if (auto enumAcc = dynamic_cast<EnumAccessExpr*>(&expr)) {
-            if (!m_enums.count(enumAcc->enumName)) {
-                error(enumAcc->loc, "Unknown enum: " + enumAcc->enumName);
-                enumAcc->type = &TypeVoid;
-                return;
-            }
-
-            EnumDecl* enm = m_enums[enumAcc->enumName];
-            checkDeprecation(this, enm->attributes, enumAcc->loc, enm->name);
-            bool found = false;
-            for (auto& member : enm->members) {
-                if (member.name == enumAcc->memberName) {
-                    enumAcc->value = member.value;
-                    found = true;
-                    break;
+        
+        else if (auto structInit = dynamic_cast<StructInitExpr*>(&expr)) {
+            std::string resolvedStructName = structInit->structName;
+            if (!m_structs.count(resolvedStructName)) {
+                for (const auto& cand : getNamespaceCandidates(structInit->structName)) {
+                    if (m_structs.count(cand)) {
+                        resolvedStructName = cand;
+                        break;
+                    }
                 }
             }
-
-            if (!found) {
-                error(enumAcc->loc, "Enum member '" + enumAcc->memberName + "' not found in enum '" + enumAcc->enumName + "'");
-                enumAcc->type = &TypeVoid;
-                return;
-            }
-
-            ParsedType pt; pt.baseName = enumAcc->enumName;
-            enumAcc->type = resolveType(pt);
-        }
-        else if (auto structInit = dynamic_cast<StructInitExpr*>(&expr)) {
+            structInit->structName = resolvedStructName;
             ParsedType pt; pt.baseName = structInit->structName;
             structInit->type = resolveType(pt);
-
             if (!structInit->type || structInit->type->scalar != ScalarType::Struct) {
                 error(structInit->loc, "Unknown struct type: " + structInit->structName);
                 structInit->type = &TypeVoid;
                 return;
             }
-
             if (!m_structs.count(structInit->type->name)) {
                 error(structInit->loc, "Struct definition not fully resolved: " + structInit->type->name);
                 structInit->type = &TypeVoid;
                 return;
             }
-
             StructDecl* st = m_structs[structInit->type->name];
             checkDeprecation(this, st->attributes, structInit->loc, st->name);
-
             for (auto& initField : structInit->fields) {
                 checkExpr(*initField.value);
                 if (!initField.value->type) initField.value->type = &TypeVoid;
@@ -986,18 +1030,86 @@ namespace gbpp {
         }
         else if (auto var = dynamic_cast<VarExpr*>(&expr)) {
             if (!var->genericArgs.empty()) {
+                std::string resolvedGenericName = var->name;
+                if (!m_generic_functions.count(resolvedGenericName)) {
+                    for (const auto& cand : getNamespaceCandidates(var->name)) {
+                        if (m_generic_functions.count(cand)) {
+                            resolvedGenericName = cand;
+                            break;
+                        }
+                    }
+                }
+                var->name = resolvedGenericName;
                 std::string mangledName = var->name;
                 for (const auto& arg : var->genericArgs) {
                     Type* argType = resolveType(arg);
                     mangledName += "$" + (argType ? argType->name : arg.baseName);
                 }
-
                 if (m_generic_functions.count(var->name)) {
                     if (!m_functions.count(mangledName)) {
                         instantiateFunction(m_generic_functions[var->name], var->genericArgs, mangledName);
                     }
                     var->name = mangledName;
                 }
+            }
+
+            std::string resolvedVarName = var->name;
+            Type* vType = lookupVariable(var->name);
+            bool isEnum = false;
+
+            size_t splitPos = var->name.rfind("::");
+            if (!vType && splitPos != std::string::npos) {
+                std::string enumName = var->name.substr(0, splitPos);
+                std::string memberName = var->name.substr(splitPos + 2);
+
+                std::string resolvedEnumName = enumName;
+                if (!m_enums.count(resolvedEnumName)) {
+                    for (const auto& cand : getNamespaceCandidates(enumName)) {
+                        if (m_enums.count(cand)) {
+                            resolvedEnumName = cand;
+                            break;
+                        }
+                    }
+                }
+
+                if (m_enums.count(resolvedEnumName)) {
+                    EnumDecl* enm = m_enums[resolvedEnumName];
+                    for (auto& member : enm->members) {
+                        if (member.name == memberName) {
+                            resolvedVarName = resolvedEnumName + "::" + memberName;
+                            checkDeprecation(this, enm->attributes, var->loc, enm->name);
+                            ParsedType pt; pt.baseName = resolvedEnumName;
+                            vType = resolveType(pt);
+                            isEnum = true;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if (!isEnum && !vType) {
+                for (const auto& cand : getNamespaceCandidates(var->name)) {
+                    if (lookupVariable(cand)) {
+                        resolvedVarName = cand;
+                        vType = lookupVariable(cand);
+                        break;
+                    }
+                    if (m_functions.count(cand) || m_generic_functions.count(cand) || m_globalVars.count(cand)) {
+                        resolvedVarName = cand;
+                        break;
+                    }
+                }
+            }
+
+            var->name = resolvedVarName;
+
+            if (isEnum) {
+                var->type = vType;
+                return;
+            }
+
+            if (!vType && m_globalVars.count(var->name)) {
+                vType = m_globalVars[var->name]->resolvedType;
             }
 
             std::vector<Attribute> attrs;
@@ -1011,8 +1123,7 @@ namespace gbpp {
                 else if (m_generic_functions.count(var->name)) attrs = m_generic_functions[var->name]->attributes;
             }
             checkDeprecation(this, attrs, var->loc, var->name);
-
-            var->type = lookupVariable(var->name);
+            var->type = vType ? vType : lookupVariable(var->name);
 
             for (Scope* s = m_currentScope; s; s = s->parent) {
                 if (s->movedVars.count(var->name)) {
@@ -1026,7 +1137,6 @@ namespace gbpp {
                 if (m_functions.count(var->name)) {
                     targetFn = m_functions[var->name];
                 }
-
                 if (targetFn) {
                     Type* t = new Type{ ScalarType::FunctionPtr, targetFn->name + "_sig", 8 };
                     for (auto& p : targetFn->params) t->paramTypes.push_back(p.resolvedType);
@@ -1361,7 +1471,6 @@ namespace gbpp {
                     if (!arg->type) arg->type = &TypeVoid;
                 }
             }
-
             if (auto mem = dynamic_cast<MemberExpr*>(call->callee.get())) {
                 checkExpr(*mem->object);
                 if (mem->object->type && (mem->object->type->scalar == ScalarType::Struct || mem->object->type->isPointer())) {
@@ -1399,8 +1508,15 @@ namespace gbpp {
                     }
                 }
             }
-
             if (auto var = dynamic_cast<VarExpr*>(call->callee.get())) {
+                if (!m_generic_functions.count(var->name) && !m_functions.count(var->name) && !lookupVariable(var->name)) {
+                    for (const auto& cand : getNamespaceCandidates(var->name)) {
+                        if (m_generic_functions.count(cand) || m_functions.count(cand) || lookupVariable(cand)) {
+                            var->name = cand;
+                            break;
+                        }
+                    }
+                }
                 if (m_generic_functions.count(var->name)) {
                     FunctionDecl* tmpl = m_generic_functions[var->name];
 

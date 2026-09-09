@@ -26,6 +26,36 @@
 
 namespace gbpp::lsp {
 
+    static std::vector<std::string> getLspNamespaceCandidates(const std::string& currentNamespace, const std::string& name) {
+        std::vector<std::string> candidates;
+        if (name.empty()) return candidates;
+        if (name.starts_with("::")) {
+            candidates.push_back(name.substr(2));
+            return candidates;
+        }
+        std::string ns = currentNamespace;
+        while (!ns.empty()) {
+            candidates.push_back(ns + "::" + name);
+            size_t pos = ns.rfind("::");
+            if (pos != std::string::npos) {
+                ns = ns.substr(0, pos);
+            }
+            else {
+                ns = "";
+            }
+        }
+        candidates.push_back(name);
+        return candidates;
+    }
+
+    template <typename MapType>
+    static std::string findInLspMap(const MapType& map, const std::string& name, const std::string& curNs) {
+        for (const auto& cand : getLspNamespaceCandidates(curNs, name)) {
+            if (map.count(cand)) return cand;
+        }
+        return "";
+    }
+
     std::unordered_map<std::string, std::unique_ptr<Program>> documentPrograms;
     std::unordered_map<std::string, std::unique_ptr<Sema>> documentSemas;
 
@@ -517,9 +547,12 @@ namespace gbpp::lsp {
                     return { nullptr, nullptr };
 
                 std::string currentTypeName = cleanTypeName(getVarType(chain[0]));
-
                 if (currentTypeName.empty())
                     return { nullptr, nullptr };
+
+                std::string resolvedType = findInLspMap(currentSema->m_structs, currentTypeName, currentNamespace);
+                if (resolvedType.empty()) resolvedType = findInLspMap(currentSema->m_generic_structs, currentTypeName, currentNamespace);
+                if (!resolvedType.empty()) currentTypeName = resolvedType;
 
                 StructDecl* currentStruct = nullptr;
                 StructDecl::Field* targetField = nullptr;
@@ -648,41 +681,92 @@ namespace gbpp::lsp {
                     appendDocs(fn->loc);
                     resolved = true;
                 }
-                else if (!resolved && (currentSema->m_functions.count(scopedFqn) || currentSema->m_functions.count(fqn) ||
-                    currentSema->m_generic_functions.count(scopedFqn) || currentSema->m_generic_functions.count(fqn))) {
+                else if (!resolved) {
+                    std::string resFn = findInLspMap(currentSema->m_functions, fqn, currentNamespace);
+                    std::string resGenFn = findInLspMap(currentSema->m_generic_functions, fqn, currentNamespace);
+                    std::string resSt = findInLspMap(currentSema->m_structs, fqn, currentNamespace);
+                    std::string resGenSt = findInLspMap(currentSema->m_generic_structs, fqn, currentNamespace);
+                    std::string resEnm = findInLspMap(currentSema->m_enums, fqn, currentNamespace);
+                    std::string resAlias = findInLspMap(currentSema->m_aliases, fqn, currentNamespace);
 
-                    FunctionDecl* fn = nullptr;
-                    if (currentSema->m_functions.count(scopedFqn)) fn = currentSema->m_functions[scopedFqn];
-                    else if (currentSema->m_functions.count(fqn)) fn = currentSema->m_functions[fqn];
-                    else if (currentSema->m_generic_functions.count(scopedFqn)) fn = currentSema->m_generic_functions[scopedFqn];
-                    else if (currentSema->m_generic_functions.count(fqn)) fn = currentSema->m_generic_functions[fqn];
-
-                    std::string sig = "fn " + fn->name;
-
-                    if (!fn->genericParams.empty()) {
-                        sig += "<";
-                        for (size_t g = 0; g < fn->genericParams.size(); ++g) {
-                            if (fn->genericParams[g].isVariadic) sig += "variadic ";
-                            sig += fn->genericParams[g].name;
-                            if (g + 1 < fn->genericParams.size()) sig += ", ";
+                    if (!resFn.empty() || !resGenFn.empty()) {
+                        FunctionDecl* fn = !resFn.empty() ? currentSema->m_functions[resFn] : currentSema->m_generic_functions[resGenFn];
+                        std::string sig = "fn " + fn->name;
+                        if (!fn->genericParams.empty()) {
+                            sig += "<";
+                            for (size_t g = 0; g < fn->genericParams.size(); ++g) {
+                                if (fn->genericParams[g].isVariadic) sig += "variadic ";
+                                sig += fn->genericParams[g].name;
+                                if (g + 1 < fn->genericParams.size()) sig += ", ";
+                            }
+                            sig += ">";
                         }
-                        sig += ">";
+                        sig += "(";
+                        for (size_t p = 0; p < fn->params.size(); ++p) {
+                            sig += fn->params[p].name + ": " + fn->params[p].parsedType.toString();
+                            if (p + 1 < fn->params.size()) sig += ", ";
+                        }
+                        sig += "): " + fn->returnType.toString();
+                        hoverMarkdown += makeCodeBlock(sig);
+                        std::string meta;
+                        meta += makeBullet("Kind", fn->genericParams.empty() ? "Function" : "Generic Function");
+                        meta += makeBullet("Return Type", "`" + fn->returnType.toString() + "`");
+                        hoverMarkdown += makeSection("Symbol Info", meta);
+                        appendDocs(fn->loc);
+                        resolved = true;
                     }
-
-                    sig += "(";
-                    for (size_t p = 0; p < fn->params.size(); ++p) {
-                        sig += fn->params[p].name + ": " + fn->params[p].parsedType.toString();
-                        if (p + 1 < fn->params.size()) sig += ", ";
+                    else if (!resSt.empty() || !resGenSt.empty()) {
+                        StructDecl* st = !resSt.empty() ? currentSema->m_structs[resSt] : currentSema->m_generic_structs[resGenSt];
+                        std::string code = "struct " + st->name;
+                        if (!st->genericParams.empty()) {
+                            code += "<";
+                            for (size_t g = 0; g < st->genericParams.size(); ++g) {
+                                code += st->genericParams[g].name;
+                                if (g + 1 < st->genericParams.size()) code += ", ";
+                            }
+                            code += ">";
+                        }
+                        code += " {\n";
+                        int totalSize = 0;
+                        for (const auto& field : st->fields) {
+                            Type* ft = currentSema->resolveType(field.parsedType);
+                            int fSize = ft ? ft->sizeBytes : 8;
+                            if (st->genericParams.empty()) totalSize = std::max(totalSize, field.offset + fSize);
+                            code += "    " + field.name + ": " + field.parsedType.toString() + ";\n";
+                        }
+                        code += "}";
+                        hoverMarkdown += makeCodeBlock(code);
+                        std::string meta;
+                        meta += makeBullet("Kind", st->genericParams.empty() ? "Struct" : "Generic Struct");
+                        meta += makeBullet("Fields", std::to_string(st->fields.size()));
+                        if (st->genericParams.empty()) meta += makeBullet("Footprint", "`" + std::to_string(totalSize) + " bytes`");
+                        else meta += makeBullet("Footprint", "Dependent on generic arguments");
+                        hoverMarkdown += makeSection("Symbol Info", meta);
+                        appendDocs(st->loc);
+                        resolved = true;
                     }
-                    sig += "): " + fn->returnType.toString();
-
-                    hoverMarkdown += makeCodeBlock(sig);
-                    std::string meta;
-                    meta += makeBullet("Kind", fn->genericParams.empty() ? "Function" : "Generic Function");
-                    meta += makeBullet("Return Type", "`" + fn->returnType.toString() + "`");
-                    hoverMarkdown += makeSection("Symbol Info", meta);
-                    appendDocs(fn->loc);
-                    resolved = true;
+                    else if (!resEnm.empty()) {
+                        auto enm = currentSema->m_enums[resEnm];
+                        std::string code = "enum " + enm->name + " {\n";
+                        for (const auto& m : enm->members) code += "    " + m.name + " = " + std::to_string(m.value) + ",\n";
+                        code += "}";
+                        hoverMarkdown += makeCodeBlock(code);
+                        std::string meta;
+                        meta += makeBullet("Kind", "Enum");
+                        meta += makeBullet("Members", std::to_string(enm->members.size()));
+                        hoverMarkdown += makeSection("Symbol Info", meta);
+                        appendDocs(enm->loc);
+                        resolved = true;
+                    }
+                    else if (!resAlias.empty()) {
+                        auto target = currentSema->m_aliases[resAlias];
+                        hoverMarkdown += makeCodeBlock("alias " + resAlias + " = " + target.toString());
+                        std::string meta;
+                        meta += makeBullet("Kind", "Alias");
+                        meta += makeBullet("Resolves To", "`" + target.toString() + "`");
+                        hoverMarkdown += makeSection("Symbol Info", meta);
+                        resolved = true;
+                    }
                 }
                 else if (!resolved && (currentSema->m_structs.count(scopedFqn) || currentSema->m_structs.count(fqn) ||
                     currentSema->m_generic_structs.count(scopedFqn) || currentSema->m_generic_structs.count(fqn))) {
@@ -1823,9 +1907,12 @@ namespace gbpp::lsp {
                             return { nullptr, nullptr };
 
                         std::string currentTypeName = cleanTypeName(getVarType(chain[0]));
-
                         if (currentTypeName.empty())
                             return { nullptr, nullptr };
+
+                        std::string resolvedType = findInLspMap(currentSema->m_structs, currentTypeName, currentNamespace);
+                        if (resolvedType.empty()) resolvedType = findInLspMap(currentSema->m_generic_structs, currentTypeName, currentNamespace);
+                        if (!resolvedType.empty()) currentTypeName = resolvedType;
 
                         StructDecl* currentStruct = nullptr;
                         StructDecl::Field* targetField = nullptr;

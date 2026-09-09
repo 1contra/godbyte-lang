@@ -6,7 +6,9 @@
 #include <algorithm>
 
 namespace gbpp {
-
+    namespace {
+        thread_local std::unordered_map<std::string, uint64_t> t_enumValues;
+    }
     thread_local SourceLoc t_currentLoc = { "", 0, 0 };
 
     int IRGenerator::getOffset(Type* type, const std::string& field) {
@@ -26,6 +28,13 @@ namespace gbpp {
         m_structMap.clear();
         m_loopExits.clear();
         m_globals.clear();
+        t_enumValues.clear();
+
+        for (const auto& enm : prog.enums) {
+            for (const auto& mem : enm->members) {
+                t_enumValues[enm->name + "::" + mem.name] = mem.value;
+            }
+        }
 
         for (const auto& v : prog.globalVars) {
             m_globals[v->name] = v.get();
@@ -545,53 +554,6 @@ namespace gbpp {
             inst.bytes = 8;
             emit(inst);
             return vReg;
-        }
-        else if (auto var = dynamic_cast<const VarExpr*>(&expr)) {
-            if (m_globals.count(var->name)) {
-                const VarDecl* gDecl = m_globals[var->name];
-                if (gDecl->resolvedType && gDecl->resolvedType->isConst && gDecl->initializer) {
-                    if (!dynamic_cast<const StructInitExpr*>(gDecl->initializer.get())) {
-                        return genExpr(*gDecl->initializer);
-                    }
-                }
-            }
-
-            int res = m_currentFunc->allocVReg();
-            int size = 8;
-            if (var->type && !var->type->isArray && var->type->scalar != ScalarType::Struct) {
-                size = var->type->sizeBytes;
-            }
-
-            if (m_locals.count(var->name)) {
-                if (m_stackPrimitives.count(var->name)) {
-                    Instruction inst = { OpCode::LOAD, res, m_locals[var->name], -1, 0, size };
-                    if (var->type && var->type->isVolatile) inst.isVolatile = true;
-                    emit(inst);
-                }
-                else {
-                    emit({ OpCode::MOV, res, m_locals[var->name], -1, 0, size });
-                }
-            }
-            else {
-                int addrReg = m_currentFunc->allocVReg();
-                Instruction inst;
-                inst.op = OpCode::LOAD_STR;
-                inst.dest = addrReg;
-                inst.label = var->name;
-                inst.bytes = 8;
-                emit(inst);
-
-                if (var->type && !var->type->isArray && var->type->scalar != ScalarType::Struct && var->type->scalar != ScalarType::FunctionPtr) {
-                    Instruction loadInst = { OpCode::LOAD, res, addrReg, -1, 0, size };
-                    if (var->type && var->type->isVolatile) loadInst.isVolatile = true;
-                    emit(loadInst);
-                }
-                else {
-                    emit({ OpCode::MOV, res, addrReg, -1, 0, 8 });
-                }
-            }
-
-            return res;
         }
         else if (auto enumAcc = dynamic_cast<const EnumAccessExpr*>(&expr)) {
             int d = m_currentFunc->allocVReg();

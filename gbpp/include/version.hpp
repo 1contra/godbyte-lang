@@ -1,3 +1,3 @@
 #pragma once
 
-#define DIVO_VERSION "0.1.1693"
+#define DIVO_VERSION "0.1.1714"
