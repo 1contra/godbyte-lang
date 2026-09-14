@@ -388,23 +388,24 @@ public:
         auto getNs = [](const std::string& fullName) {
             size_t pos = fullName.rfind("::");
             return pos != std::string::npos ? fullName.substr(0, pos) : "";
-        };
+            };
         auto getName = [](const std::string& fullName) {
             size_t pos = fullName.rfind("::");
             return pos != std::string::npos ? fullName.substr(pos + 2) : fullName;
-        };
+            };
         auto hasExport = [](const std::vector<gbpp::Attribute>& attrs) {
             for (const auto& attr : attrs) {
                 if (attr.kind == gbpp::AttrKind::Export) return true;
             }
             return false;
-        };
+            };
 
         std::map<std::string, std::vector<gbpp::AliasDecl*>> aliasesByNs;
         std::map<std::string, std::vector<gbpp::EnumDecl*>> enumsByNs;
         std::map<std::string, std::vector<gbpp::StructDecl*>> structsByNs;
         std::map<std::string, std::vector<gbpp::FunctionDecl*>> funcsByNs;
         std::map<std::string, std::vector<gbpp::VarDecl*>> varsByNs;
+        std::map<std::string, std::vector<gbpp::FunctionDecl*>> structMethods;
 
         for (auto& a : prog->aliases) if (hasExport(a->attributes)) aliasesByNs[getNs(a->name)].push_back(a.get());
         for (auto& e : prog->enums) if (hasExport(e->attributes)) enumsByNs[getNs(e->name)].push_back(e.get());
@@ -412,22 +413,21 @@ public:
         for (auto& v : prog->globalVars) if (hasExport(v->attributes)) varsByNs[getNs(v->name)].push_back(v.get());
 
         for (auto& f : prog->functions) {
-            if (hasExport(f->attributes)) {
-                funcsByNs[getNs(f->name)].push_back(f.get());
-            }
-            else {
-                std::string fns = getNs(f->name);
-                std::string fname = getName(f->name);
-                bool belongsToExportedStruct = false;
-                for (auto& s : prog->structs) {
-                    if (hasExport(s->attributes) && getNs(s->name) == fns) {
-                        if (fname.starts_with(getName(s->name) + "_") || fname.starts_with(getName(s->name) + "::")) {
-                            belongsToExportedStruct = true;
-                            break;
-                        }
-                    }
+            bool belongsToExportedStruct = false;
+            std::string parentStructName = "";
+            for (auto& s : prog->structs) {
+                if (hasExport(s->attributes) && f->name.starts_with(s->name + "::")) {
+                    belongsToExportedStruct = true;
+                    parentStructName = s->name;
+                    break;
                 }
-                if (belongsToExportedStruct) funcsByNs[fns].push_back(f.get());
+            }
+
+            if (belongsToExportedStruct) {
+                structMethods[parentStructName].push_back(f.get());
+            }
+            else if (hasExport(f->attributes)) {
+                funcsByNs[getNs(f->name)].push_back(f.get());
             }
         }
 
@@ -438,20 +438,33 @@ public:
         for (auto& kv : funcsByNs) namespaces.insert(kv.first);
         for (auto& kv : varsByNs) namespaces.insert(kv.first);
 
+        std::vector<std::string> currentNsPath;
+
         for (const auto& ns : namespaces) {
-            std::vector<std::string> nsParts;
+            std::vector<std::string> targetNsPath;
             size_t start = 0, end = 0;
             while ((end = ns.find("::", start)) != std::string::npos) {
-                nsParts.push_back(ns.substr(start, end - start));
+                targetNsPath.push_back(ns.substr(start, end - start));
                 start = end + 2;
             }
-            if (start < ns.length() && !ns.empty()) nsParts.push_back(ns.substr(start));
+            if (start < ns.length() && !ns.empty()) targetNsPath.push_back(ns.substr(start));
 
-            std::string indent = "";
-            for (const auto& p : nsParts) {
-                out << indent << "namespace " << p << " {\n";
-                indent += "    ";
+            size_t common = 0;
+            while (common < currentNsPath.size() && common < targetNsPath.size() && currentNsPath[common] == targetNsPath[common]) {
+                common++;
             }
+
+            for (size_t i = currentNsPath.size(); i > common; --i) {
+                std::string indent((i - 1) * 4, ' ');
+                out << indent << "}\n";
+            }
+            for (size_t i = common; i < targetNsPath.size(); ++i) {
+                std::string indent(i * 4, ' ');
+                out << indent << "namespace " << targetNsPath[i] << " {\n";
+            }
+
+            currentNsPath = targetNsPath;
+            std::string indent(currentNsPath.size() * 4, ' ');
 
             for (auto a : aliasesByNs[ns]) {
                 out << indent << "[[@extern]]\n" << indent << "alias " << getName(a->name) << " = " << a->targetType.toString() << ";\n\n";
@@ -461,28 +474,40 @@ public:
                 for (auto& m : e->members) out << indent << "    " << m.name << " = " << m.value << ",\n";
                 out << indent << "};\n\n";
             }
+            for (auto v : varsByNs[ns]) {
+                out << indent << "[[@extern]]\n" << indent << getName(v->name) << ": " << v->parsedType.toString() << ";\n\n";
+            }
             for (auto s : structsByNs[ns]) {
                 out << indent << "[[@extern]]\n" << indent << "struct " << getName(s->name) << " {\n";
                 for (auto& f : s->fields) out << indent << "    " << f.name << ": " << f.parsedType.toString() << ";\n";
+
+                if (structMethods.count(s->name)) {
+                    out << "\n" << indent << "    methods {\n";
+                    for (auto mf : structMethods[s->name]) {
+                        out << indent << "        [[@extern(\"" << mf->name << "\")]]\n" << indent << "        fn " << getName(mf->name) << "(";
+                        for (size_t i = 0; i < mf->params.size(); ++i) {
+                            out << mf->params[i].name << ": " << mf->params[i].parsedType.toString();
+                            if (i + 1 < mf->params.size()) out << ", ";
+                        }
+                        out << "): " << (mf->returnType.baseName.empty() ? "void" : mf->returnType.toString()) << ";\n\n";
+                    }
+                    out << indent << "    }\n";
+                }
                 out << indent << "};\n\n";
             }
-            for (auto v : varsByNs[ns]) {
-                out << indent << "[[@extern]]\n" << indent << "const " << getName(v->name) << ": " << v->parsedType.toString() << ";\n\n";
-            }
             for (auto f : funcsByNs[ns]) {
-                out << indent << "[[@extern]]\n" << indent << "fn " << getName(f->name) << "(";
+                out << indent << "[[@extern(\"" << f->name << "\")]]\n" << indent << "fn " << getName(f->name) << "(";
                 for (size_t i = 0; i < f->params.size(); ++i) {
                     out << f->params[i].name << ": " << f->params[i].parsedType.toString();
                     if (i + 1 < f->params.size()) out << ", ";
                 }
                 out << "): " << (f->returnType.baseName.empty() ? "void" : f->returnType.toString()) << ";\n\n";
             }
+        }
 
-            for (int i = (int)nsParts.size() - 1; i >= 0; --i) {
-                indent = indent.substr(0, indent.length() - 4);
-                out << indent << "}\n";
-            }
-            if (!nsParts.empty()) out << "\n";
+        for (size_t i = currentNsPath.size(); i > 0; --i) {
+            std::string indent((i - 1) * 4, ' ');
+            out << indent << "}\n";
         }
     }
 };

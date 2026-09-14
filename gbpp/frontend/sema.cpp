@@ -1142,9 +1142,25 @@ namespace gbpp {
                     for (auto& p : targetFn->params) t->paramTypes.push_back(p.resolvedType);
                     t->returnType = targetFn->returnTypeResolved;
                     var->type = t;
+
                     if (hasAttribute(targetFn->attributes, AttrKind::Extern)) {
-                        size_t p = targetFn->name.rfind("::");
-                        var->name = (p != std::string::npos) ? targetFn->name.substr(p + 2) : targetFn->name;
+                        std::string explicitName = "";
+                        for (auto& a : targetFn->attributes) {
+                            if (a.kind == AttrKind::Extern && !a.args.empty()) {
+                                explicitName = a.args[0];
+                                if (explicitName.size() >= 2 && (explicitName.front() == '"' || explicitName.front() == '\'')) {
+                                    explicitName = explicitName.substr(1, explicitName.size() - 2);
+                                }
+                                break;
+                            }
+                        }
+                        if (!explicitName.empty()) {
+                            var->name = explicitName;
+                        }
+                        else {
+                            size_t p = targetFn->name.rfind("::");
+                            var->name = (p != std::string::npos) ? targetFn->name.substr(p + 2) : targetFn->name;
+                        }
                     }
                     else {
                         var->name = targetFn->name;
@@ -1600,8 +1616,23 @@ namespace gbpp {
                     call->type = targetFn->returnTypeResolved ? targetFn->returnTypeResolved : &TypeVoid;
                     isFunctionCall = true;
                     if (hasAttribute(targetFn->attributes, AttrKind::Extern)) {
-                        size_t p = targetFn->name.rfind("::");
-                        var->name = (p != std::string::npos) ? targetFn->name.substr(p + 2) : targetFn->name;
+                        std::string explicitName = "";
+                        for (auto& a : targetFn->attributes) {
+                            if (a.kind == AttrKind::Extern && !a.args.empty()) {
+                                explicitName = a.args[0];
+                                if (explicitName.size() >= 2 && (explicitName.front() == '"' || explicitName.front() == '\'')) {
+                                    explicitName = explicitName.substr(1, explicitName.size() - 2);
+                                }
+                                break;
+                            }
+                        }
+                        if (!explicitName.empty()) {
+                            var->name = explicitName;
+                        }
+                        else {
+                            size_t p = targetFn->name.rfind("::");
+                            var->name = (p != std::string::npos) ? targetFn->name.substr(p + 2) : targetFn->name;
+                        }
                     }
                     else {
                         var->name = targetFn->name;

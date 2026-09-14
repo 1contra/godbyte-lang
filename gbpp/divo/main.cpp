@@ -141,63 +141,131 @@ void loadImportsRecursively(const std::string& currentPath, std::vector<ModuleDe
 
 void cmdAdd(int argc, char* argv[]) {
     if (argc < 3) {
-        divo::print_err_fatal("Usage: divo add <library_name>");
+        divo::print_err_fatal("Usage: divo add <library_name_or_git_url>");
         return;
     }
 
-    std::string libName = argv[2];
+    std::string libInput = argv[2];
+    std::string libName = libInput;
 
     if (!fs::exists("divo.toml")) {
         divo::print_err_fatal("Could not find 'divo.toml'. Run 'divo init' first.");
         return;
     }
 
-    if (divo::LibraryRegistry.find(libName) == divo::LibraryRegistry.end()) {
-        divo::print_item_warn("Library '" + libName + "' is not a standard system library. Fetching AOT binary.");
-    }
-
     if (!fs::exists("libs")) {
         fs::create_directory("libs");
     }
 
-    const char* envHome = std::getenv("DIVO_HOME");
-    if (!envHome) {
-        divo::print_err_fatal("DIVO_HOME environment variable is not set. Please set it to your Divo installation path.");
-        return;
-    }
+    bool isRemote = libInput.starts_with("http://") || libInput.starts_with("https://") ||
+        libInput.starts_with("git@") || libInput.ends_with(".git");
 
-    fs::path globalLibSrcPath = fs::path(envHome) / "libs" / (libName + ".gbpp");
-    fs::path localLibSrcPath = fs::path("libs") / (libName + ".gbpp");
+    if (isRemote) {
+        divo::print_header("Fetching Remote Package");
+        divo::print_item("Source: " + libInput);
+
+        size_t slashPos = libInput.find_last_of('/');
+        size_t dotPos = libInput.find_last_of('.');
+        if (slashPos != std::string::npos) {
+            if (dotPos != std::string::npos && dotPos > slashPos) {
+                libName = libInput.substr(slashPos + 1, dotPos - slashPos - 1);
+            }
+            else {
+                libName = libInput.substr(slashPos + 1);
+            }
+        }
+
+        fs::path cacheDir = fs::path(".divo_cache") / libName;
+        if (fs::exists(cacheDir)) {
+            divo::print_item("Cleaning previous cache...");
+            fs::remove_all(cacheDir);
+        }
+
+        std::string cloneCmd = "git clone --depth 1 " + libInput + " " + cacheDir.string();
+        if (divo::runCmd(cloneCmd) != 0) {
+            divo::print_err_fatal("Failed to clone remote repository. Ensure 'git' is in PATH and the URL is valid.");
+            return;
+        }
+
+        divo::print_item("Building remote package '" + libName + "'...");
+        std::string buildCmd = "cd " + cacheDir.string() + " && divo build -O --type=static";
+        if (divo::runCmd(buildCmd) != 0) {
+            divo::print_err_fatal("Failed to build remote package. Ensure the package has a valid divo.toml.");
+            return;
+        }
+
+        divo::print_item("Harvesting AOT artifacts...");
+        fs::path targetDir = cacheDir / "target";
+        bool foundArtifacts = false;
+
+        if (fs::exists(targetDir)) {
+            for (const auto& entry : fs::recursive_directory_iterator(targetDir)) {
+                if (entry.is_regular_file()) {
+                    std::string ext = entry.path().extension().string();
+                    std::string filename = entry.path().filename().string();
+
+                    if (ext == ".gbpp" && filename.find("_api") != std::string::npos) {
+                        fs::copy_file(entry.path(), fs::path("libs") / (libName + ".gbpp"), fs::copy_options::overwrite_existing);
+                        foundArtifacts = true;
+                    }
+                    else if (ext == ".lib" || ext == ".a") {
+                        fs::copy_file(entry.path(), fs::path("libs") / filename, fs::copy_options::overwrite_existing);
+                    }
+                }
+            }
+        }
+
+        if (!foundArtifacts) {
+            divo::print_err_fatal("Remote package built successfully, but no _api.gbpp or static library was found in the target/ directory.");
+            return;
+        }
+
+        divo::print_item("Cleaning up temporary cache...");
+        fs::remove_all(".divo_cache");
+    }
+    else {
+        if (divo::LibraryRegistry.find(libName) == divo::LibraryRegistry.end()) {
+            divo::print_item_warn("Library '" + libName + "' is not a standard system library. Searching DIVO_HOME.");
+        }
+
+        const char* envHome = std::getenv("DIVO_HOME");
+        if (!envHome) {
+            divo::print_err_fatal("DIVO_HOME environment variable is not set. Cannot fetch local packages.");
+            return;
+        }
+
+        fs::path globalLibSrcPath = fs::path(envHome) / "libs" / (libName + ".gbpp");
+        fs::path localLibSrcPath = fs::path("libs") / (libName + ".gbpp");
 
 #ifdef _WIN32
-    std::string libBinName = libName + ".lib";
+        std::string libBinName = libName + ".lib";
 #else
-    std::string libBinName = "lib" + libName + ".a";
+        std::string libBinName = "lib" + libName + ".a";
 #endif
 
-    fs::path globalLibBinPath = fs::path(envHome) / "libs" / libBinName;
-    fs::path localLibBinPath = fs::path("libs") / libBinName;
+        fs::path globalLibBinPath = fs::path(envHome) / "libs" / libBinName;
+        fs::path localLibBinPath = fs::path("libs") / libBinName;
 
-    if (!fs::exists(globalLibSrcPath)) {
-        divo::print_err_fatal("Library interface '" + libName + ".gbpp' not found in DIVO_HOME/libs.");
-        return;
-    }
-
-    divo::print_item("Copying " + libName + ".gbpp from DIVO_HOME...");
-    try {
-        fs::copy_file(globalLibSrcPath, localLibSrcPath, fs::copy_options::overwrite_existing);
-
-        if (fs::exists(globalLibBinPath)) {
-            divo::print_item("Copying pre-compiled binary " + libBinName + " from DIVO_HOME...");
-            fs::copy_file(globalLibBinPath, localLibBinPath, fs::copy_options::overwrite_existing);
+        if (!fs::exists(globalLibSrcPath)) {
+            divo::print_err_fatal("Library interface '" + libName + ".gbpp' not found in DIVO_HOME/libs.");
+            return;
         }
-        else if (divo::LibraryRegistry.find(libName) == divo::LibraryRegistry.end()) {
-            divo::print_item_warn("Pre-compiled binary '" + libBinName + "' not found. Linkage may fail if not system provided.");
+
+        divo::print_item("Copying " + libName + ".gbpp from DIVO_HOME...");
+        try {
+            fs::copy_file(globalLibSrcPath, localLibSrcPath, fs::copy_options::overwrite_existing);
+            if (fs::exists(globalLibBinPath)) {
+                divo::print_item("Copying pre-compiled binary " + libBinName + " from DIVO_HOME...");
+                fs::copy_file(globalLibBinPath, localLibBinPath, fs::copy_options::overwrite_existing);
+            }
+            else if (divo::LibraryRegistry.find(libName) == divo::LibraryRegistry.end()) {
+                divo::print_item_warn("Pre-compiled binary '" + libBinName + "' not found. Linkage may fail if not system provided.");
+            }
         }
-    }
-    catch (const fs::filesystem_error& e) {
-        divo::print_err_fatal(std::string("Failed to copy library: ") + e.what());
-        return;
+        catch (const fs::filesystem_error& e) {
+            divo::print_err_fatal(std::string("Failed to copy library: ") + e.what());
+            return;
+        }
     }
 
     if (divo::ConfigLoader::addDependencyToFile("divo.toml", libName)) {
@@ -207,6 +275,62 @@ void cmdAdd(int argc, char* argv[]) {
     else {
         divo::print_err_fatal("Failed to update divo.toml");
     }
+}
+
+void cmdPublish() {
+    divo::Config config = divo::ConfigLoader::load("divo.toml");
+    if (!config.valid) {
+        divo::print_err_fatal("Could not load 'divo.toml'. Run 'divo init'.");
+        return;
+    }
+
+    std::string targetName = config.activeTarget;
+    if (!config.targets.count(targetName)) {
+        divo::print_err_fatal("Target '" + targetName + "' not defined in config.");
+        return;
+    }
+
+    divo::TargetConfig target = config.targets[targetName];
+    std::string outExt = (target.os == "linux") ? ".a" : ".lib";
+    std::string targetTriple = target.arch + "-" + target.os;
+    std::string targetBase = "target/" + targetTriple + "/release";
+
+    std::string libBinPath = targetBase + "/" + fs::path(target.out).stem().string() + outExt;
+    std::string interfacePath = targetBase + "/" + config.projectName + "_api.gbpp";
+
+    if (!fs::exists(libBinPath) || !fs::exists(interfacePath)) {
+        divo::print_err_fatal("Release artifacts not found. Run 'divo build -O --type=static' first.");
+        return;
+    }
+
+    const char* envHome = std::getenv("DIVO_HOME");
+    if (!envHome) {
+        divo::print_err_fatal("DIVO_HOME environment variable is not set. Cannot publish.");
+        return;
+    }
+
+    fs::path globalLibsDir = fs::path(envHome) / "libs";
+    if (!fs::exists(globalLibsDir)) {
+        fs::create_directories(globalLibsDir);
+    }
+
+    std::string destBinName = (target.os == "linux") ? ("lib" + config.projectName + ".a") : (config.projectName + ".lib");
+    fs::path destBin = globalLibsDir / destBinName;
+    fs::path destApi = globalLibsDir / (config.projectName + ".gbpp");
+
+    try {
+        fs::copy_file(libBinPath, destBin, fs::copy_options::overwrite_existing);
+        fs::copy_file(interfacePath, destApi, fs::copy_options::overwrite_existing);
+    }
+    catch (const fs::filesystem_error& e) {
+        divo::print_err_fatal(std::string("Failed to publish library: ") + e.what());
+        return;
+    }
+
+    divo::print_header("Publish");
+    divo::print_item("Published -> " + destBin.string());
+    divo::print_item("Published -> " + destApi.string());
+    divo::print_footer("Library '" + config.projectName + "' is now available globally.", true);
 }
 
 void cmdInit() {
@@ -554,7 +678,8 @@ void printHelp(const std::string& command = "") {
         divo::print_item("Commands:");
         divo::print_item("  init           Initialize a new project");
         divo::print_item("  build          Build the project");
-        divo::print_item("  add <lib>      Add a library dependency");
+        divo::print_item("  add <lib>      Add a library dependency (or git URL)");
+        divo::print_item("  publish        Publish a compiled static library to DIVO_HOME");
         divo::print_item("  clean          Remove build artifacts");
         divo::print_item("  help [command] Show help for a command");
         divo::print_item("");
@@ -604,6 +729,7 @@ int main(int argc, char* argv[]) {
     if (command == "init") cmdInit();
     else if (command == "build") cmdBuild(argc, argv);
     else if (command == "add") cmdAdd(argc, argv);
+    else if (command == "publish") cmdPublish();
     else if (command == "clean") {
         std::error_code ec;
         bool failed = false;

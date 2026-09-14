@@ -992,37 +992,65 @@ namespace gbpp {
             return ret;
         }
         if (match(TokenType::Comptime)) {
-            auto cIf = std::make_unique<ComptimeIfStmt>();
-            cIf->loc = previous().loc;
             consume(TokenType::If, "Expect 'if' after 'comptime'");
             consume(TokenType::LParen, "Expect '(' after comptime if");
-            cIf->condition = parseExpression();
+            auto condExpr = parseExpression();
             consume(TokenType::RParen, "Expect ')' after condition");
-            consume(TokenType::LBrace, "Expect '{' for comptime if block");
-            cIf->thenBranch = parseBlock();
 
-            ComptimeIfStmt* currentIf = cIf.get();
-            while (match(TokenType::Else)) {
-                if (match(TokenType::If)) {
-                    auto nextIf = std::make_unique<ComptimeIfStmt>();
-                    nextIf->loc = previous().loc;
-                    consume(TokenType::LParen, "Expect '('");
-                    nextIf->condition = parseExpression();
-                    consume(TokenType::RParen, "Expect ')'");
+            bool isTrue = evaluateComptimeExpr(condExpr.get()) != 0;
+            std::unique_ptr<Stmt> resultStmt = nullptr;
+
+            if (isTrue) {
+                consume(TokenType::LBrace, "Expect '{' for comptime if block");
+                resultStmt = parseBlock();
+
+                while (match(TokenType::Else)) {
+                    if (match(TokenType::If) || check(TokenType::LParen)) {
+                        consume(TokenType::LParen, "Expect '('");
+                        parseExpression();
+                        consume(TokenType::RParen, "Expect ')'");
+                    }
                     consume(TokenType::LBrace, "Expect '{'");
-                    nextIf->thenBranch = parseBlock();
-
-                    auto temp = nextIf.get();
-                    currentIf->elseBranch = std::move(nextIf);
-                    currentIf = temp;
-                }
-                else {
-                    consume(TokenType::LBrace, "Expect '{' after else");
-                    currentIf->elseBranch = parseBlock();
-                    break;
+                    skipBlock();
                 }
             }
-            return cIf;
+            else {
+                consume(TokenType::LBrace, "Expect '{'");
+                skipBlock();
+                bool foundTrue = false;
+
+                while (match(TokenType::Else)) {
+                    if (match(TokenType::If) || check(TokenType::LParen)) {
+                        consume(TokenType::LParen, "Expect '('");
+                        auto elifCond = parseExpression();
+                        consume(TokenType::RParen, "Expect ')'");
+
+                        if (!foundTrue && evaluateComptimeExpr(elifCond.get()) != 0) {
+                            consume(TokenType::LBrace, "Expect '{'");
+                            resultStmt = parseBlock();
+                            foundTrue = true;
+                        }
+                        else {
+                            consume(TokenType::LBrace, "Expect '{'");
+                            skipBlock();
+                        }
+                    }
+                    else {
+                        if (!foundTrue) {
+                            consume(TokenType::LBrace, "Expect '{'");
+                            resultStmt = parseBlock();
+                            foundTrue = true;
+                        }
+                        else {
+                            consume(TokenType::LBrace, "Expect '{'");
+                            skipBlock();
+                        }
+                    }
+                }
+            }
+
+            if (!resultStmt) resultStmt = std::make_unique<BlockStmt>();
+            return resultStmt;
         }
         if (match(TokenType::If)) return parseIfStatement();
         if (match(TokenType::While)) return parseWhileStatement();
@@ -1487,14 +1515,6 @@ namespace gbpp {
                 }
                 consume(TokenType::RBrace, "Expect '}' after struct initialization");
                 expr = std::move(structInit);
-            }
-            else if (isPath && !check(TokenType::LParen)) {
-                size_t pos = name.rfind("::");
-                auto enumAcc = std::make_unique<EnumAccessExpr>();
-                enumAcc->loc = identTok.loc;
-                enumAcc->enumName = name.substr(0, pos);
-                enumAcc->memberName = name.substr(pos + 2);
-                expr = std::move(enumAcc);
             }
             else {
                 auto var = std::make_unique<VarExpr>();

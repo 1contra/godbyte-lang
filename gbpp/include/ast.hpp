@@ -314,12 +314,6 @@ namespace gbpp {
         std::vector<EnumMember> members;
     };
 
-    struct EnumAccessExpr : Expr {
-        std::string enumName;
-        std::string memberName;
-        uint64_t value = 0;
-    };
-
     struct AliasDecl : ASTNode {
         std::vector<Attribute> attributes;
         std::string name;

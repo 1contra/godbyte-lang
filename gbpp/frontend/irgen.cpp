@@ -555,10 +555,64 @@ namespace gbpp {
             emit(inst);
             return vReg;
         }
-        else if (auto enumAcc = dynamic_cast<const EnumAccessExpr*>(&expr)) {
+        else if (auto var = dynamic_cast<const VarExpr*>(&expr)) {
             int d = m_currentFunc->allocVReg();
-            int size = enumAcc->type ? enumAcc->type->sizeBytes : 8;
-            emit({ OpCode::CONST, d, -1, -1, enumAcc->value, size });
+            int size = var->type ? var->type->sizeBytes : 8;
+
+            if (m_locals.count(var->name)) {
+                if (m_stackPrimitives.count(var->name)) {
+                    Instruction loadInst = { OpCode::LOAD, d, m_locals[var->name], -1, 0, size };
+                    if (var->type && var->type->isVolatile) loadInst.isVolatile = true;
+                    emit(loadInst);
+                }
+                else if (var->type && (var->type->isArray || var->type->scalar == ScalarType::Struct)) {
+                    emit({ OpCode::MOV, d, m_locals[var->name], -1, 0, 8 });
+                }
+                else {
+                    emit({ OpCode::MOV, d, m_locals[var->name], -1, 0, size });
+                }
+            }
+            else if (t_enumValues.count(var->name)) {
+                emit({ OpCode::CONST, d, -1, -1, t_enumValues[var->name], size });
+            }
+            else if (m_globals.count(var->name)) {
+                const VarDecl* gDecl = m_globals[var->name];
+
+                if (gDecl->resolvedType && gDecl->resolvedType->isConst && gDecl->initializer) {
+                    if (auto lit = dynamic_cast<const IntLiteral*>(gDecl->initializer.get())) {
+                        uint64_t val = 0;
+                        try {
+                            std::string txt = lit->value;
+                            int base = (txt.starts_with("0x") || txt.starts_with("0X")) ? 16 : 10;
+                            val = std::stoull(txt, nullptr, base);
+                        }
+                        catch (...) {}
+                        emit({ OpCode::CONST, d, -1, -1, val, size });
+                        return d;
+                    }
+                }
+
+                int addrReg = m_currentFunc->allocVReg();
+                Instruction addrInst = { OpCode::LOAD_STR, addrReg, -1, -1, 0, 8 };
+                addrInst.label = var->name;
+                emit(addrInst);
+
+                if (var->type && (var->type->isArray || var->type->scalar == ScalarType::Struct)) {
+                    emit({ OpCode::MOV, d, addrReg, -1, 0, 8 });
+                }
+                else {
+                    Instruction loadInst = { OpCode::LOAD, d, addrReg, -1, 0, size };
+                    if (var->type && var->type->isVolatile) loadInst.isVolatile = true;
+                    emit(loadInst);
+                }
+            }
+            else {
+                int addrReg = m_currentFunc->allocVReg();
+                Instruction addrInst = { OpCode::LOAD_STR, addrReg, -1, -1, 0, 8 };
+                addrInst.label = var->name;
+                emit(addrInst);
+                emit({ OpCode::MOV, d, addrReg, -1, 0, 8 });
+            }
             return d;
         }
         else if (auto un = dynamic_cast<const UnaryExpr*>(&expr)) {
