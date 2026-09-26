@@ -373,6 +373,7 @@ namespace gbpp {
                 case MInstOpcode::X86_XORPS: return "xorps";
                 case MInstOpcode::X86_ADDSS: return "addss";
                 case MInstOpcode::X86_ADDSD: return "addsd";
+                case MInstOpcode::X86_VZEROUPPER: return "vzeroupper";
                 default: return "";
             }
         }
@@ -1119,9 +1120,11 @@ namespace gbpp {
 
                             if (inst.op == OpCode::ADD && src2.isImm() && (int64_t)src2.imm >= -2147483648LL && (int64_t)src2.imm <= 2147483647LL) {
                                 if (dst.isReg() && dst.size >= 4 && src1.isReg()) {
-                                    MachineOperand mem = MachineOperand::createMem(src1.reg, (int)src2.imm, dst.size);
-                                    mb.insts.push_back({ MInstOpcode::X86_LEAr, { dst, mem } });
-                                    break;
+                                    if (src2.imm != 1 && src2.imm != -1) {
+                                        MachineOperand mem = MachineOperand::createMem(src1.reg, (int)src2.imm, dst.size);
+                                        mb.insts.push_back({ MInstOpcode::X86_LEAr, { dst, mem } });
+                                        break;
+                                    }
                                 }
                             }
 
@@ -1191,6 +1194,10 @@ namespace gbpp {
                             }
                             auto src1 = resolveOp(inst.src1, inst.bytes);
                             auto src2 = resolveOp(inst.src2, inst.bytes);
+
+                            auto rax = MachineOperand::createReg(REG_RAX, inst.bytes);
+                            emitLirMov(mb.insts, rax, src1);
+
                             MachineOperand safeSrc2 = src2;
                             if (src2.isReg() && (src2.reg == REG_RAX || src2.reg == REG_RDX)) {
                                 safeSrc2 = MachineOperand::createReg(REG_R8, inst.bytes);
@@ -1200,8 +1207,7 @@ namespace gbpp {
                                 safeSrc2 = MachineOperand::createReg(REG_R8, inst.bytes);
                                 emitLirMov(mb.insts, safeSrc2, src2);
                             }
-                            auto rax = MachineOperand::createReg(REG_RAX, inst.bytes);
-                            emitLirMov(mb.insts, rax, src1);
+
                             if (inst.op == OpCode::DIV || inst.op == OpCode::MOD) {
                                 mb.insts.push_back({ MInstOpcode::X86_CQO, {} });
                                 mb.insts.push_back({ MInstOpcode::X86_IDIVr, { safeSrc2 } });

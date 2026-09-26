@@ -101,6 +101,7 @@ namespace gbpp {
                 case MInstOpcode::X86_VMOVDQU: return "vmovdqu";
                 case MInstOpcode::X86_VPBROADCASTD: return "vpbroadcastd";
                 case MInstOpcode::X86_VPBROADCASTQ: return "vpbroadcastq";
+                case MInstOpcode::X86_VZEROUPPER:   return "vzeroupper";
                 case MInstOpcode::X86_BSWAP: return "bswap";
                 case MInstOpcode::X86_ROL8:  return "rol";
                 case MInstOpcode::X86_INT3:  return "int3";

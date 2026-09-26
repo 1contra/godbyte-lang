@@ -84,8 +84,11 @@ namespace gbpp {
         X86_LABEL,
         X86_INLINE_ASM,
         X86_CMOVE, X86_CMOVNE, X86_CMOVL, X86_CMOVLE, X86_CMOVG, X86_CMOVGE,
-        X86_BSWAP, X86_ROL8, X86_INT3, X86_UD2
+        X86_BSWAP, X86_ROL8, X86_INT3, X86_UD2,
+        X86_VEXTRACTI128, X86_VPSRLDQ, X86_VPMOVZXDQ, X86_VMOVQ
     };
+
+    std::string getMnemonic(MInstOpcode op);
 
     struct MachineInstr {
         MInstOpcode opcode;

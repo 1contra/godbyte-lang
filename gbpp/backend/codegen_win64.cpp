@@ -370,6 +370,7 @@ namespace gbpp {
                 case MInstOpcode::X86_XORPS: return "xorps";
                 case MInstOpcode::X86_ADDSS: return "addss";
                 case MInstOpcode::X86_ADDSD: return "addsd";
+                case MInstOpcode::X86_VZEROUPPER: return "vzeroupper";
                 default: return "";
             }
         }
@@ -396,7 +397,14 @@ namespace gbpp {
                 selectOptimalLoadImm(lir, dst, src.imm);
             }
             else if (dst.isMem() && src.isImm()) {
-                lir.push_back({ MInstOpcode::X86_MOVmi, { dst, src } });
+                if (src.size == 8 && ((int64_t)src.imm > 2147483647LL || (int64_t)src.imm < -2147483648LL)) {
+                    auto r10 = MachineOperand::createReg(REG_R10, 8);
+                    selectOptimalLoadImm(lir, r10, src.imm);
+                    lir.push_back({ MInstOpcode::X86_MOVmr, { dst, r10 } });
+                }
+                else {
+                    lir.push_back({ MInstOpcode::X86_MOVmi, { dst, src } });
+                }
             }
             else if (dst.isReg() && src.isReg()) {
                 if (src.size < 4 && dst.size > src.size) {
@@ -874,7 +882,7 @@ namespace gbpp {
             int globalIdx = 0;
             for (const auto& irBlock : fn.blocks) {
                 MIRBasicBlock mb;
-                mb.name = irBlock->name;
+                mb.name = sanitizeLabel(fn.name) + "_" + irBlock->name;
                 const Instruction* prevInst = nullptr;
                 for (const auto& inst : irBlock->instructions) {
                     size_t startInstIdx = mb.insts.size();
@@ -1127,13 +1135,20 @@ namespace gbpp {
 
                             if (inst.op == OpCode::ADD && src2.isImm() && (int64_t)src2.imm >= -2147483648LL && (int64_t)src2.imm <= 2147483647LL) {
                                 if (dst.isReg() && dst.size >= 4 && src1.isReg()) {
-                                    MachineOperand mem = MachineOperand::createMem(src1.reg, (int)src2.imm, dst.size);
-                                    mb.insts.push_back({ MInstOpcode::X86_LEAr, { dst, mem } });
-                                    break;
+                                    if (src2.imm != 1 && src2.imm != -1) { // <-- ADD THIS CHECK
+                                        MachineOperand mem = MachineOperand::createMem(src1.reg, (int)src2.imm, dst.size);
+                                        mb.insts.push_back({ MInstOpcode::X86_LEAr, { dst, mem } });
+                                        break;
+                                    }
                                 }
                             }
 
                             MachineOperand safe_src2 = src2;
+                            if (safe_src2.isImm() && safe_src2.size == 8 && ((int64_t)safe_src2.imm > 2147483647LL || (int64_t)safe_src2.imm < -2147483648LL)) {
+                                auto r11 = MachineOperand::createReg(REG_R11, safe_src2.size);
+                                selectOptimalLoadImm(mb.insts, r11, safe_src2.imm);
+                                safe_src2 = r11;
+                            }
 
                             if (src2.isReg() && dst.isReg() && src2.reg == dst.reg && (!src1.isReg() || src1.reg != dst.reg)) {
                                 if (inst.op == OpCode::ADD || inst.op == OpCode::OR) {
@@ -1172,17 +1187,24 @@ namespace gbpp {
                             auto src1 = resolveOp(inst.src1, inst.bytes);
                             auto src2 = inst.src2 == -1 ? MachineOperand::createImm(inst.imm, inst.bytes) : resolveOp(inst.src2, inst.bytes);
 
+                            MachineOperand safe_src2 = src2;
+                            if (safe_src2.isImm() && safe_src2.size == 8 && ((int64_t)safe_src2.imm > 2147483647LL || (int64_t)safe_src2.imm < -2147483648LL)) {
+                                auto r11 = MachineOperand::createReg(REG_R11, safe_src2.size);
+                                selectOptimalLoadImm(mb.insts, r11, safe_src2.imm);
+                                safe_src2 = r11;
+                            }
+
                             if (dst.isMem()) {
                                 auto r10 = MachineOperand::createReg(REG_R10, inst.bytes);
                                 emitLirMov(mb.insts, r10, src1);
-                                if (src2.isImm()) mb.insts.push_back({ MInstOpcode::X86_IMULrri, { r10, r10, src2 } });
-                                else mb.insts.push_back({ MInstOpcode::X86_IMULrr, { r10, src2 } });
+                                if (safe_src2.isImm()) mb.insts.push_back({ MInstOpcode::X86_IMULrri, { r10, r10, safe_src2 } });
+                                else mb.insts.push_back({ MInstOpcode::X86_IMULrr, { r10, safe_src2 } });
                                 emitLirMov(mb.insts, dst, r10);
                             }
                             else {
                                 emitLirMov(mb.insts, dst, src1);
-                                if (src2.isImm()) mb.insts.push_back({ MInstOpcode::X86_IMULrri, { dst, dst, src2 } });
-                                else mb.insts.push_back({ MInstOpcode::X86_IMULrr, { dst, src2 } });
+                                if (safe_src2.isImm()) mb.insts.push_back({ MInstOpcode::X86_IMULrri, { dst, dst, safe_src2 } });
+                                else mb.insts.push_back({ MInstOpcode::X86_IMULrr, { dst, safe_src2 } });
                             }
                             break;
                         }
@@ -1200,6 +1222,9 @@ namespace gbpp {
                             auto src1 = resolveOp(inst.src1, inst.bytes);
                             auto src2 = resolveOp(inst.src2, inst.bytes);
 
+                            auto rax = MachineOperand::createReg(REG_RAX, inst.bytes);
+                            emitLirMov(mb.insts, rax, src1);
+
                             MachineOperand safeSrc2 = src2;
                             if (src2.isReg() && (src2.reg == REG_RAX || src2.reg == REG_RDX)) {
                                 safeSrc2 = MachineOperand::createReg(REG_R8, inst.bytes);
@@ -1209,9 +1234,6 @@ namespace gbpp {
                                 safeSrc2 = MachineOperand::createReg(REG_R8, inst.bytes);
                                 emitLirMov(mb.insts, safeSrc2, src2);
                             }
-
-                            auto rax = MachineOperand::createReg(REG_RAX, inst.bytes);
-                            emitLirMov(mb.insts, rax, src1);
 
                             if (inst.op == OpCode::DIV || inst.op == OpCode::MOD) {
                                 mb.insts.push_back({ MInstOpcode::X86_CQO, {} });
@@ -1245,16 +1267,25 @@ namespace gbpp {
                             auto src1 = resolveOp(inst.src1, inst.bytes);
                             auto src2 = inst.src2 == -1 ? MachineOperand::createImm(inst.imm, 1) : resolveOp(inst.src2, 1);
 
-                            emitLirMov(mb.insts, dst, src1);
                             MInstOpcode opReg = (inst.op == OpCode::SHL) ? MInstOpcode::X86_SHLr : MInstOpcode::X86_SHRr;
                             MInstOpcode opCl = (inst.op == OpCode::SHL) ? MInstOpcode::X86_SHLcl : MInstOpcode::X86_SHRcl;
 
                             if (src2.isImm()) {
+                                emitLirMov(mb.insts, dst, src1);
                                 mb.insts.push_back({ opReg, { dst, src2 } });
                             }
                             else {
+                                emitLirMov(mb.insts, MachineOperand::createReg(REG_R10, 8), MachineOperand::createReg(REG_RCX, 8));
+
+                                auto r11 = MachineOperand::createReg(REG_R11, inst.bytes);
+                                emitLirMov(mb.insts, r11, src1);
                                 emitLirMov(mb.insts, MachineOperand::createReg(REG_RCX, 1), src2);
-                                mb.insts.push_back({ opCl, { dst, MachineOperand::createReg(REG_RCX, 1) } });
+
+                                mb.insts.push_back({ opCl, { r11, MachineOperand::createReg(REG_RCX, 1) } });
+
+                                emitLirMov(mb.insts, MachineOperand::createReg(REG_RCX, 8), MachineOperand::createReg(REG_R10, 8));
+
+                                emitLirMov(mb.insts, dst, r11);
                             }
                             break;
                         }
@@ -1276,6 +1307,12 @@ namespace gbpp {
 
                             auto left = resolveOp(inst.src1, opSize);
                             auto right = inst.src2 == -1 ? MachineOperand::createImm(inst.imm, opSize) : resolveOp(inst.src2, opSize);
+
+                            if (right.isImm() && right.size == 8 && ((int64_t)right.imm > 2147483647LL || (int64_t)right.imm < -2147483648LL)) {
+                                auto r11 = MachineOperand::createReg(REG_R11, opSize);
+                                selectOptimalLoadImm(mb.insts, r11, right.imm);
+                                right = r11;
+                            }
 
                             if (left.isMem() || left.isImm()) {
                                 auto r10 = MachineOperand::createReg(REG_R10, opSize);
@@ -1325,6 +1362,7 @@ namespace gbpp {
                             for (const auto& b : fn.blocks) {
                                 if (b->id == static_cast<int>(inst.imm)) { targetLabel = b->name; break; }
                             }
+                            targetLabel = sanitizeLabel(fn.name) + "_" + targetLabel;
                             mb.insts.push_back({ MInstOpcode::X86_JMP, { MachineOperand::createLabel(targetLabel) } });
                             break;
                         }
@@ -1333,6 +1371,7 @@ namespace gbpp {
                             for (const auto& b : fn.blocks) {
                                 if (b->id == static_cast<int>(inst.imm)) { targetLabel = b->name; break; }
                             }
+                            targetLabel = sanitizeLabel(fn.name) + "_" + targetLabel;
 
                             if (prevInst &&
                                 (prevInst->op == OpCode::CMP_EQ || prevInst->op == OpCode::CMP_NE ||
@@ -1374,9 +1413,9 @@ namespace gbpp {
                         case OpCode::CALL: {
                             if (alloc.callSpills.count(globalIdx)) {
                                 for (int vReg : alloc.callSpills[globalIdx]) {
-                                    MachineOperand reg = resolveOp(vReg, 8);
+                                    MachineOperand reg = MachineOperand::createReg(alloc.registers[vReg], 8);
                                     MachineOperand mem = createFrameMem(-(calleeSavedSpace + (maxLocals * 8) + alloc.spills[vReg]), 8);
-                                    emitLirMov(mb.insts, reg, mem);
+                                    emitLirMov(mb.insts, mem, reg);
                                 }
                             }
 
@@ -1471,9 +1510,9 @@ namespace gbpp {
 
                             if (alloc.callSpills.count(globalIdx)) {
                                 for (int vReg : alloc.callSpills[globalIdx]) {
-                                    MachineOperand reg = resolveOp(vReg, 8);
-                                    MachineOperand mem = MachineOperand::createMem(REG_RBP, -(calleeSavedSpace + (maxLocals * 8) + alloc.spills[vReg]), 8);
-                                    emitLirMov(mb.insts, mem, reg);
+                                    MachineOperand reg = MachineOperand::createReg(alloc.registers[vReg], 8);
+                                    MachineOperand mem = createFrameMem(-(calleeSavedSpace + (maxLocals * 8) + alloc.spills[vReg]), 8);
+                                    emitLirMov(mb.insts, reg, mem);
                                 }
                             }
                             break;
@@ -1630,6 +1669,12 @@ namespace gbpp {
                                 }
                                 auto left = resolveOp(condDef->src1, opSize);
                                 auto right = condDef->src2 == -1 ? MachineOperand::createImm(condDef->imm, opSize) : resolveOp(condDef->src2, opSize);
+
+                                if (right.isImm() && right.size == 8 && ((int64_t)right.imm > 2147483647LL || (int64_t)right.imm < -2147483648LL)) {
+                                    auto r11 = MachineOperand::createReg(REG_R11, opSize);
+                                    selectOptimalLoadImm(mb.insts, r11, right.imm);
+                                    right = r11;
+                                }
 
                                 if (left.isMem() || left.isImm()) {
                                     auto r10 = MachineOperand::createReg(REG_R10, opSize);

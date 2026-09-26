@@ -1343,7 +1343,7 @@ namespace gbpp {
                 int ptrReg = fn.allocVReg();
                 seqInsts.push_back({ OpCode::ADD, ptrReg, seqAlloc, -1, i * elementBytes, 8 });
                 Instruction st = { OpCode::STORE, -1, ptrReg, valReg, 0, elementBytes };
-                st.isVolatile = true;
+                //st.isVolatile = true;
                 seqInsts.push_back(st);
             }
             seqVecReg = fn.allocVReg();

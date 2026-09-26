@@ -2,10 +2,12 @@
 #include <algorithm>
 
 namespace gbpp {
+    const int REG_RAX = 0;
+    const int REG_RCX = 1;
+
     AllocResult RegAlloc::allocate(IRFunction& fn, const TargetRegisterInfo& tri) {
         AllocResult result;
         result.spillSize = 0;
-
         std::vector<int> callIndices;
         std::map<int, Lifetime> lifetimes;
         std::map<int, int> blockStartIdx;
@@ -16,14 +18,13 @@ namespace gbpp {
         for (const auto& block : fn.blocks) {
             blockStartIdx[block->id] = globalIdx;
             for (const auto& inst : block->instructions) {
-
                 if (inst.op == OpCode::GET_PARAM) {
                     if (inst.imm < static_cast<int>(tri.argRegs.size()) && !regHints.count(inst.dest)) {
                         regHints[inst.dest] = tri.argRegs[inst.imm];
                     }
                 }
 
-                if (inst.op == OpCode::CALL || inst.op == OpCode::DIV) {
+                if (inst.op == OpCode::CALL) {
                     callIndices.push_back(globalIdx);
                     for (size_t i = 0; i < std::min(tri.argRegs.size(), inst.args.size()); ++i) {
                         int vArg = inst.args[i];
@@ -32,9 +33,25 @@ namespace gbpp {
                         }
                     }
                 }
+                else if (inst.op == OpCode::DIV || inst.op == OpCode::UDIV || inst.op == OpCode::MOD || inst.op == OpCode::UMOD) {
+                    callIndices.push_back(globalIdx);
+                }
 
                 if (inst.op == OpCode::RET && inst.src1 != -1) {
                     if (!regHints.count(inst.src1)) regHints[inst.src1] = tri.returnReg;
+                }
+
+                if (inst.op == OpCode::SHL || inst.op == OpCode::SHR) {
+                    if (inst.src2 != -1 && !regHints.count(inst.src2)) {
+                        regHints[inst.src2] = REG_RCX;
+                    }
+                }
+
+                if (inst.op == OpCode::DIV || inst.op == OpCode::UDIV ||
+                    inst.op == OpCode::MOD || inst.op == OpCode::UMOD) {
+                    if (inst.src1 != -1 && !regHints.count(inst.src1)) {
+                        regHints[inst.src1] = REG_RAX;
+                    }
                 }
 
                 if (inst.dest != -1 && !definitions.count(inst.dest)) definitions[inst.dest] = globalIdx;
@@ -44,7 +61,6 @@ namespace gbpp {
                     if (!lifetimes.count(v)) lifetimes[v] = { globalIdx, globalIdx };
                     lifetimes[v].end = std::max(lifetimes[v].end, globalIdx);
                     };
-
                 touch(inst.dest);
                 touch(inst.src1);
                 touch(inst.src2);
@@ -81,11 +97,11 @@ namespace gbpp {
         std::vector<int> vRegs;
         for (auto const& [vreg, life] : lifetimes) vRegs.push_back(vreg);
         std::sort(vRegs.begin(), vRegs.end(), [&](int a, int b) { return lifetimes[a].start < lifetimes[b].start; });
+
         const std::vector<int>& callerSaved = tri.callerSaved;
         const std::vector<int>& calleeSaved = tri.calleeSaved;
 
         std::map<int, int> active;
-
         for (int vReg : vRegs) {
             int start = lifetimes[vReg].start;
             int end = lifetimes[vReg].end;
@@ -110,7 +126,6 @@ namespace gbpp {
                 for (int reg : calleeSaved) {
                     if (active.find(reg) == active.end()) { picked = reg; break; }
                 }
-
                 if (picked == -1) {
                     for (int reg : callerSaved) {
                         if (active.find(reg) == active.end()) { picked = reg; break; }
@@ -122,13 +137,11 @@ namespace gbpp {
                     int hint = regHints[vReg];
                     if (active.find(hint) == active.end()) { picked = hint; }
                 }
-
                 if (picked == -1) {
                     for (int reg : callerSaved) {
                         if (active.find(reg) == active.end()) { picked = reg; break; }
                     }
                 }
-
                 if (picked == -1) {
                     for (int reg : calleeSaved) {
                         if (active.find(reg) == active.end()) { picked = reg; break; }
