@@ -761,19 +761,41 @@ namespace gbpp {
             } while (match(TokenType::Comma));
             consumeGT("Expect '>' after generic parameters");
         }
+
+        if (match(TokenType::Extends)) {
+            st->parentName = consume(TokenType::Identifier, "Expect parent struct name").text;
+        }
+
         consume(TokenType::LBrace, "Expect '{'");
+        AccessModifier currentAccess = AccessModifier::Public;
+
         while (!check(TokenType::RBrace) && !isAtEnd()) {
+            if (match(TokenType::Public)) { consume(TokenType::Colon, "Expect ':' after public"); currentAccess = AccessModifier::Public; continue; }
+            if (match(TokenType::Private)) { consume(TokenType::Colon, "Expect ':' after private"); currentAccess = AccessModifier::Private; continue; }
+
             if (check(TokenType::Identifier) && peek().text == "methods" && peek(1).type == TokenType::LBrace) {
                 advance();
                 consume(TokenType::LBrace, "Expect '{' after methods keyword");
+                AccessModifier methodAccess = AccessModifier::Public;
                 while (!check(TokenType::RBrace) && !isAtEnd()) {
                     try {
+                        if (match(TokenType::Public)) { consume(TokenType::Colon, "Expect ':' after public"); methodAccess = AccessModifier::Public; continue; }
+                        if (match(TokenType::Private)) { consume(TokenType::Colon, "Expect ':' after private"); methodAccess = AccessModifier::Private; continue; }
+
+                        bool isVirtual = match(TokenType::Virtual);
+                        bool isOverride = match(TokenType::Override);
+
                         std::vector<Attribute> pendingAttrs = parseAttributes();
                         if (check(TokenType::Fn)) advance();
                         auto methodDecl = parseFunction();
                         methodDecl->attributes = std::move(pendingAttrs);
                         methodDecl->genericParams = st->genericParams;
                         methodDecl->name = st->name + "::" + methodDecl->name;
+                        methodDecl->parentStructName = st->name;
+                        methodDecl->access = methodAccess;
+                        methodDecl->isVirtual = isVirtual;
+                        methodDecl->isOverride = isOverride;
+
                         st->methods.push_back(std::move(methodDecl));
                     }
                     catch (const std::runtime_error& e) {
@@ -838,6 +860,7 @@ namespace gbpp {
                 methodTok = consume(TokenType::Identifier, "Expect method name");
             }
             fnName += "::" + methodTok.text;
+            fn->parentStructName = nameTok.text;
         }
         fn->name = fnName;
 
@@ -1435,6 +1458,17 @@ namespace gbpp {
             auto sz = std::make_unique<SizeofExpr>();
             sz->parsedTargetType = pt;
             expr = std::move(sz);
+        }
+        else if (match(TokenType::IndexOf)) {
+            consume(TokenType::LT, "Expect '<' after indexof");
+            ParsedType pt = parseType();
+            consume(TokenType::Dot, "Expect '.' after type in indexof");
+            std::string fieldName = consume(TokenType::Identifier, "Expect field name in indexof").text;
+            consumeGT("Expect '>' after field in indexof");
+            auto idx = std::make_unique<IndexOfExpr>();
+            idx->parsedTargetType = pt;
+            idx->fieldName = fieldName;
+            expr = std::move(idx);
         }
         else if (match(TokenType::Alignof)) {
             consume(TokenType::LT, "Expect '<' after alignof");

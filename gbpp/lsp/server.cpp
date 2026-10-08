@@ -2234,6 +2234,10 @@ namespace gbpp::lsp {
         bool lastClosedBlockWasComptime = false;
         bool nextBlockIsComptime = false;
 
+        bool isDeadCode = false;
+        int deadCodeBraceDepth = -1;
+        bool markDeadAfterSemicolon = false;
+
         auto* currentProgram = documentPrograms.count(uri) ? documentPrograms[uri].get() : nullptr;
         std::set<std::string> configSymbols;
 
@@ -2389,19 +2393,23 @@ namespace gbpp::lsp {
             }
             else if (token.type == TokenType::RBrace) {
                 lastClosedBlockWasComptime = isComptimeBlock[braceDepth];
-
                 if (structBraceDepthForSemantics == braceDepth) {
                     activeStructForSemantics = "";
                     structBraceDepthForSemantics = -1;
                 }
-
                 if (inInactiveBlock && inactiveBraceDepth == braceDepth) {
                     inInactiveBlock = false;
                     inactiveBraceDepth = -1;
                     isClosingInactive = true;
                 }
-                braceDepth--;
 
+                if (isDeadCode && deadCodeBraceDepth == braceDepth) {
+                    isDeadCode = false;
+                    deadCodeBraceDepth = -1;
+                }
+                markDeadAfterSemicolon = false;
+
+                braceDepth--;
                 if (!nsStack.empty() && nsStack.back().second == braceDepth) {
                     nsStack.pop_back();
                     currentNamespace.clear();
@@ -2428,11 +2436,15 @@ namespace gbpp::lsp {
                         bool isNot = false;
                         if (j < tokens.size() && tokens[j].type == TokenType::Bang) { isNot = true; j++; }
 
-                        if (j < tokens.size() && tokens[j].type == TokenType::Identifier) {
-                            std::string varName = tokens[j].text;
+                        std::string varName = "";
+                        while (j < tokens.size() && (tokens[j].type == TokenType::Identifier || tokens[j].type == TokenType::Dot)) {
+                            varName += tokens[j].text;
+                            j++;
+                        }
+
+                        if (!varName.empty()) {
                             bool val = localComptimeVars.count(varName) ? localComptimeVars[varName] : (Parser::m_comptimeVars.count(varName) ? Parser::m_comptimeVars[varName] != 0 : false);
                             bool condition = isNot ? !val : val;
-
                             comptimeChainTaken[braceDepth + 1] = condition;
                             waitingForInactiveBrace = !condition;
                             nextBlockIsComptime = true;
@@ -2447,11 +2459,15 @@ namespace gbpp::lsp {
                             bool isNot = false;
                             if (j < tokens.size() && tokens[j].type == TokenType::Bang) { isNot = true; j++; }
 
-                            if (j < tokens.size() && tokens[j].type == TokenType::Identifier) {
-                                std::string varName = tokens[j].text;
+                            std::string varName = "";
+                            while (j < tokens.size() && (tokens[j].type == TokenType::Identifier || tokens[j].type == TokenType::Dot)) {
+                                varName += tokens[j].text;
+                                j++;
+                            }
+
+                            if (!varName.empty()) {
                                 bool val = localComptimeVars.count(varName) ? localComptimeVars[varName] : (Parser::m_comptimeVars.count(varName) ? Parser::m_comptimeVars[varName] != 0 : false);
                                 bool condition = isNot ? !val : val;
-
                                 if (comptimeChainTaken.count(braceDepth + 1) && comptimeChainTaken[braceDepth + 1]) {
                                     waitingForInactiveBrace = true;
                                 }
@@ -2482,6 +2498,58 @@ namespace gbpp::lsp {
             }
 
             int tokenTypeIdx = getSemanticTokenType(token.type, token.text, currentSema);
+
+            if (!inInactiveBlock && !isDeadCode) {
+                if (token.type == TokenType::Return || token.type == TokenType::Break ||
+                    token.type == TokenType::Continue || token.type == TokenType::BuiltinTrap ||
+                    token.type == TokenType::BuiltinUnreachable) {
+                    markDeadAfterSemicolon = true;
+                }
+            }
+
+            bool applyDeadCode = isDeadCode;
+
+            if (token.type == TokenType::Semicolon && markDeadAfterSemicolon) {
+                isDeadCode = true;
+                deadCodeBraceDepth = braceDepth;
+                markDeadAfterSemicolon = false;
+            }
+
+            if (!inMacro && token.type == TokenType::LBracket && i + 1 < tokens.size() && tokens[i + 1].type == TokenType::LBracket) {
+                inMacro = true;
+            }
+            if (inMacro) {
+                tokenTypeIdx = 1;
+            }
+            if (inMacro && token.type == TokenType::RBracket && i > 0 && tokens[i - 1].type == TokenType::RBracket) {
+                inMacro = false;
+            }
+            if (!inMacro) {
+                if (token.type == TokenType::At) {
+                    tokenTypeIdx = 8;
+                    nextIsConstructorOffset = true;
+                }
+                else if (nextIsConstructorOffset && token.type == TokenType::IntLiteral) {
+                    tokenTypeIdx = 8;
+                    nextIsConstructorOffset = false;
+                }
+                else if (tokenTypeIdx != -1 && token.type != TokenType::At) {
+                    nextIsConstructorOffset = false;
+                }
+            }
+
+            if (inInactiveBlock || waitingForInactiveBrace || isClosingInactive || applyDeadCode) {
+                tokenModifier |= 8;
+            }
+
+            if (tokenTypeIdx == -1) {
+                if (inInactiveBlock || waitingForInactiveBrace || isClosingInactive || applyDeadCode) {
+                    tokenTypeIdx = 6;
+                }
+                else {
+                    continue;
+                }
+            }
 
             if (!inMacro && token.type == TokenType::Identifier && token.text != "else") {
                 bool isConfig = configSymbols.count(token.text) ||

@@ -109,6 +109,22 @@ namespace gbpp {
 
         for (auto& enm : prog.enums) m_enums[enm->name] = enm.get();
         for (auto& alias : prog.aliases) {
+            if (alias->targetType.isUnion) {
+                StructDecl* commonBase = nullptr;
+                bool valid = true;
+                for (auto& ut : alias->targetType.unionTypes) {
+                    Type* t = resolveType(ut);
+                    while (t && t->isPointer()) t = t->base;
+                    if (!t || t->scalar != ScalarType::Struct) { valid = false; break; }
+                    StructDecl* st = m_structs[t->name];
+                    if (!st || st->parentName.empty()) { valid = false; break; }
+                    if (!commonBase) commonBase = m_structs[st->parentName];
+                    else if (st->parentName != commonBase->name) { valid = false; break; }
+                }
+                if (!valid) {
+                    error(alias->loc, "Union type alias must consist of structs that extend the exact same parent.");
+                }
+            }
             m_aliases[alias->name] = alias->targetType;
         }
 
@@ -136,8 +152,10 @@ namespace gbpp {
 
         for (auto& st : prog.structs) {
             if (st->genericParams.empty()) {
+                populateAllMethods(st.get());
+
                 std::string savedNs = t_currentNamespace;
-                t_currentNamespace = extractNamespace(st->name); 
+                t_currentNamespace = extractNamespace(st->name);
                 int runningOffset = 0;
                 for (auto& field : st->fields) {
                     if (field.offset == 0 && runningOffset != 0) field.offset = runningOffset;
@@ -203,6 +221,93 @@ namespace gbpp {
         return errors.empty();
     }
 
+    bool Sema::isSubclass(Type* derived, Type* base) {
+        if (!derived || !base) return false;
+        if (derived->scalar != ScalarType::Struct || base->scalar != ScalarType::Struct) return false;
+        StructDecl* curr = m_structs[derived->name];
+        while (curr) {
+            if (curr->name == base->name) return true;
+            if (curr->parentName.empty()) break;
+            curr = m_structs[curr->parentName];
+        }
+        return false;
+    }
+
+    bool Sema::typesCompatible(Type* expected, Type* actual) {
+        if (!expected || !actual) return false;
+        if (*expected == *actual) return true;
+        if (expected->isPointer() && actual->isPointer()) {
+            if (isSubclass(actual->base, expected->base)) return true;
+        }
+        return false;
+    }
+
+    void Sema::populateAllMethods(StructDecl* st) {
+        if (st->allMethodsPopulated) return;
+        st->allMethodsPopulated = true;
+
+        if (!st->parentName.empty()) {
+            StructDecl* parent = nullptr;
+            if (m_structs.count(st->parentName)) parent = m_structs[st->parentName];
+            else if (m_generic_structs.count(st->parentName)) parent = m_generic_structs[st->parentName];
+
+            if (parent) {
+                populateAllMethods(parent);
+                st->allMethods = parent->allMethods;
+                st->vtableLayout = parent->vtableLayout;
+                st->isPolymorphic = parent->isPolymorphic;
+
+                std::vector<StructDecl::Field> mergedFields = parent->fields;
+                for (auto& f : st->fields) mergedFields.push_back(f);
+                st->fields = mergedFields;
+            }
+            else {
+                error(st->loc, "Unknown parent struct: " + st->parentName);
+            }
+        }
+
+        for (const auto& [fName, fn] : m_functions) {
+            if (fn->parentStructName == st->name && !fn->isOperator) {
+                st->allMethods.push_back(fn);
+                if (fn->isVirtual || fn->isOverride) {
+                    st->isPolymorphic = true;
+                    if (fn->isOverride) {
+                        bool found = false;
+                        size_t colonPos = fn->name.rfind("::");
+                        std::string baseName = (colonPos != std::string::npos) ? fn->name.substr(colonPos + 2) : fn->name;
+                        for (size_t i = 0; i < st->vtableLayout.size(); ++i) {
+                            std::string vName = st->vtableLayout[i]->name;
+                            size_t vColonPos = vName.rfind("::");
+                            std::string vBaseName = (vColonPos != std::string::npos) ? vName.substr(vColonPos + 2) : vName;
+                            if (vBaseName == baseName) {
+                                st->vtableLayout[i] = fn;
+                                fn->vtableIndex = i;
+                                found = true;
+                                break;
+                            }
+                        }
+                        if (!found) error(fn->loc, "Method '" + baseName + "' marked override but does not override any base method.");
+                    }
+                    else {
+                        fn->vtableIndex = st->vtableLayout.size();
+                        st->vtableLayout.push_back(fn);
+                    }
+                }
+            }
+        }
+
+        for (const auto& [fName, fn] : m_generic_functions) {
+            if (fn->parentStructName == st->name && !fn->isOperator) {
+                st->allMethods.push_back(fn);
+            }
+        }
+
+        if (st->isPolymorphic && (st->parentName.empty() || (m_structs.count(st->parentName) && !m_structs[st->parentName]->isPolymorphic))) {
+            ParsedType pt; pt.baseName = "u64";
+            st->fields.insert(st->fields.begin(), { "__vptr", pt, 0, {}, AccessModifier::Private });
+        }
+    }
+
     bool Sema::analyzeModules(const std::vector<Program*>& progs) {
         errors.clear();
         s_loopDepth = 0;
@@ -240,6 +345,8 @@ namespace gbpp {
         for (auto prog : progs) {
             for (auto& st : prog->structs) {
                 if (st->genericParams.empty()) {
+                    populateAllMethods(st.get());
+
                     std::string savedNs = t_currentNamespace;
                     t_currentNamespace = extractNamespace(st->name);
                     int runningOffset = 0;
@@ -559,6 +666,13 @@ namespace gbpp {
         if (auto sz = dynamic_cast<SizeofExpr*>(e)) {
             auto res = std::make_unique<SizeofExpr>(); res->loc = sz->loc; res->parsedTargetType = substituteType(sz->parsedTargetType, subs); return res;
         }
+        if (auto idx = dynamic_cast<IndexOfExpr*>(e)) {
+            auto res = std::make_unique<IndexOfExpr>();
+            res->loc = idx->loc;
+            res->parsedTargetType = substituteType(idx->parsedTargetType, subs);
+            res->fieldName = idx->fieldName;
+            return res;
+        }
         if (auto b = dynamic_cast<BuiltinCallExpr*>(e)) {
             auto res = std::make_unique<BuiltinCallExpr>();
             res->loc = b->loc;
@@ -718,32 +832,14 @@ namespace gbpp {
             error(tmpl->loc, "Generic argument count mismatch for " + tmpl->name);
             return nullptr;
         }
-
         auto inst = std::make_unique<StructDecl>();
         inst->name = mangledName;
         inst->loc = tmpl->loc;
+        inst->parentName = tmpl->parentName;
+        inst->isPolymorphic = tmpl->isPolymorphic;
 
         StructDecl* rawPtr = inst.get();
         m_structs[mangledName] = rawPtr;
-
-        std::unordered_map<std::string, std::string> substitutions;
-        for (size_t i = 0; i < args.size(); ++i) {
-            Type* argType = resolveType(args[i]);
-            substitutions[tmpl->genericParams[i].name] = argType ? argType->name : args[i].baseName;
-        }
-
-        int runningOffset = 0;
-        for (const auto& f : tmpl->fields) {
-            ParsedType subbedType = substituteType(f.parsedType, substitutions);
-            Type* resolvedFType = resolveType(subbedType);
-            int fieldSize = resolvedFType ? resolvedFType->sizeBytes : 8;
-            int offset = f.offset;
-            if (offset == 0 && runningOffset != 0) offset = runningOffset;
-            inst->fields.push_back({ f.name, subbedType, offset, f.attributes });
-            runningOffset = std::max(runningOffset, offset) + fieldSize;
-        }
-
-        m_instantiated_structs.push_back(std::move(inst));
 
         std::string prefixC = tmpl->name + "::";
         for (auto& [gName, gFn] : m_generic_functions) {
@@ -752,14 +848,44 @@ namespace gbpp {
                 std::string mangledFnName = mangledName + "::" + methodName;
                 if (!m_functions.count(mangledFnName)) {
                     FunctionDecl* instFn = instantiateFunction(gFn, args, mangledFnName);
+                    instFn->parentStructName = mangledName;
+                    instFn->name = mangledFnName;
 
                     if (instFn->isOperator) {
-                        instFn->parentStructName = mangledName;
                         m_structOperators[mangledName][instFn->operatorKind] = instFn;
                     }
                 }
             }
         }
+
+        populateAllMethods(rawPtr);
+
+        int runningOffset = 0;
+        if (!rawPtr->fields.empty()) {
+            for (auto& f : rawPtr->fields) {
+                Type* ft = resolveType(f.parsedType);
+                int fsz = ft ? ft->sizeBytes : 8;
+                runningOffset = std::max(runningOffset, f.offset + fsz);
+            }
+        }
+
+        std::unordered_map<std::string, std::string> substitutions;
+        for (size_t i = 0; i < args.size(); ++i) {
+            Type* argType = resolveType(args[i]);
+            substitutions[tmpl->genericParams[i].name] = argType ? argType->name : args[i].baseName;
+        }
+
+        for (const auto& f : tmpl->fields) {
+            ParsedType subbedType = substituteType(f.parsedType, substitutions);
+            Type* resolvedFType = resolveType(subbedType);
+            int fieldSize = resolvedFType ? resolvedFType->sizeBytes : 8;
+            int offset = f.offset;
+            if (offset == 0 && runningOffset != 0) offset = runningOffset;
+            rawPtr->fields.push_back({ f.name, subbedType, offset, f.attributes });
+            runningOffset = std::max(runningOffset, offset) + fieldSize;
+        }
+
+        m_instantiated_structs.push_back(std::move(inst));
 
         return rawPtr;
     }
@@ -823,7 +949,7 @@ namespace gbpp {
 
             if (d->initializer) {
                 checkExpr(*d->initializer);
-                if (d->resolvedType && d->initializer->type && *d->resolvedType != *d->initializer->type) {
+                if (d->resolvedType && d->initializer->type && !typesCompatible(d->resolvedType, d->initializer->type)) {
                     error(d->loc, "Type mismatch in declaration of '" + d->name +
                         "'. Expected " + d->resolvedType->toString() + ", got " + d->initializer->type->toString());
                 }
@@ -840,7 +966,7 @@ namespace gbpp {
             if (r->value) {
                 checkExpr(*r->value);
 
-                if (!r->value->type) r->value->type = &TypeVoid;
+                if (!typesCompatible(m_currentFunctionReturnType, r->value->type)) r->value->type = &TypeVoid;
 
                 if (m_currentFunctionReturnType && m_currentFunctionReturnType->name.starts_with("heap ")) {
                     Expr* retVal = r->value.get();
@@ -993,6 +1119,30 @@ namespace gbpp {
             size->resolvedTargetType = resolveType(size->parsedTargetType);
             if (!size->resolvedTargetType) error(size->loc, "Unknown type in sizeof");
             size->type = &TypeU64;
+        }
+        else if (auto idx = dynamic_cast<IndexOfExpr*>(&expr)) {
+            idx->resolvedTargetType = resolveType(idx->parsedTargetType);
+
+            if (!idx->resolvedTargetType || idx->resolvedTargetType->scalar != ScalarType::Struct) {
+                error(idx->loc, "indexof requires a valid struct type.");
+            }
+            else {
+                std::string sName = idx->resolvedTargetType->name;
+                if (m_structs.count(sName)) {
+                    bool found = false;
+                    for (auto& f : m_structs[sName]->fields) {
+                        if (f.name == idx->fieldName) {
+                            found = true;
+                            break;
+                        }
+                    }
+                    if (!found) {
+                        error(idx->loc, "Field '" + idx->fieldName + "' not found in struct '" + sName + "'.");
+                    }
+                }
+            }
+
+            idx->type = &TypeU64;
         }
         else if (auto str = dynamic_cast<StringLiteral*>(&expr)) {
             ParsedType pt; pt.baseName = "u8"; pt.modifiers.push_back(TypeModifier::Ref);
@@ -1248,18 +1398,54 @@ namespace gbpp {
             if (!arr->type) {
                 arr->type = &TypeVoid;
             }
-            }
+        }
         else if (auto memExpr = dynamic_cast<MemberExpr*>(&expr)) {
             checkExpr(*memExpr->object);
-
             if (!memExpr->object->type) {
                 memExpr->type = &TypeVoid;
                 return;
             }
-
             Type* objType = memExpr->object->type;
             while (objType->isPointer()) {
                 objType = objType->base;
+            }
+
+            if (m_structs.count(objType->name)) {
+                populateAllMethods(m_structs[objType->name]);
+            }
+
+            if (objType->scalar == ScalarType::Union) {
+                Type* firstUn = objType->unionTypes[0];
+                while (firstUn->isPointer()) firstUn = firstUn->base;
+                StructDecl* st = m_structs[firstUn->name];
+                StructDecl* parent = m_structs[st->parentName];
+
+                bool found = false;
+                if (parent) {
+                    for (auto& f : parent->fields) {
+                        if (f.name == memExpr->memberName) {
+                            memExpr->type = resolveType(f.parsedType);
+                            found = true; break;
+                        }
+                    }
+                    if (!found) {
+                        for (auto* m : parent->allMethods) {
+                            size_t colonPos = m->name.rfind("::");
+                            std::string bName = (colonPos != std::string::npos) ? m->name.substr(colonPos + 2) : m->name;
+                            if (bName == memExpr->memberName) {
+                                memExpr->isMethod = true;
+                                memExpr->resolvedMethod = m;
+                                memExpr->type = m->signatureType.get();
+                                found = true; break;
+                            }
+                        }
+                    }
+                }
+                if (!found) {
+                    error(memExpr->loc, "Member '" + memExpr->memberName + "' not found in common base class '" + parent->name + "'");
+                    memExpr->type = &TypeVoid;
+                }
+                return;
             }
 
             if (objType->scalar != ScalarType::Struct) {
@@ -1268,20 +1454,42 @@ namespace gbpp {
                 return;
             }
 
-            if (!m_structs.count(objType->name)) {
-                error(memExpr->loc, "Unknown struct type: " + objType->name);
-                memExpr->type = &TypeVoid;
-                return;
-            }
-
             StructDecl* st = m_structs[objType->name];
             bool found = false;
+            AccessModifier acc = AccessModifier::Public;
+
             for (auto& f : st->fields) {
                 if (f.name == memExpr->memberName) {
                     checkDeprecation(this, f.attributes, memExpr->loc, f.name);
                     memExpr->type = resolveType(f.parsedType);
+                    acc = f.access;
                     found = true;
                     break;
+                }
+            }
+
+            if (!found) {
+                for (auto* m : st->allMethods) {
+                    size_t colonPos = m->name.rfind("::");
+                    std::string baseName = (colonPos != std::string::npos) ? m->name.substr(colonPos + 2) : m->name;
+                    if (baseName == memExpr->memberName) {
+                        memExpr->isMethod = true;
+                        memExpr->resolvedMethod = m;
+                        memExpr->type = m->signatureType.get();
+                        acc = m->access;
+                        found = true;
+                        break;
+                    }
+                }
+            }
+
+            if (found) {
+                if (acc == AccessModifier::Private) {
+                    bool allowed = false;
+                    for (Scope* s = m_currentScope; s; s = s->parent) {
+
+                    }
+                    // if (!allowed) error(memExpr->loc, "Cannot access private member");
                 }
             }
 
@@ -1330,7 +1538,7 @@ namespace gbpp {
 
                 }
 
-                if (assign->target->type && assign->value->type && *assign->target->type != *assign->value->type) {
+                if (assign->target->type && assign->value->type && !typesCompatible(assign->target->type, assign->value->type)) {
                     error(assign->loc, "Type mismatch in assignment. Cannot assign " +
                         assign->value->type->toString() + " to " + assign->target->type->toString());
                 }
@@ -1489,39 +1697,28 @@ namespace gbpp {
             }
             if (auto mem = dynamic_cast<MemberExpr*>(call->callee.get())) {
                 checkExpr(*mem->object);
-                if (mem->object->type && (mem->object->type->scalar == ScalarType::Struct || mem->object->type->isPointer())) {
-                    Type* baseType = mem->object->type;
-                    bool isPtr = baseType->isPointer();
-                    std::string structName = isPtr ? baseType->base->name : baseType->name;
-                    std::string expectedMethodName = structName + "::" + mem->memberName;
-                    FunctionDecl* fn = nullptr;
-                    if (m_functions.count(expectedMethodName)) fn = m_functions[expectedMethodName];
-                    else if (m_generic_functions.count(expectedMethodName)) fn = m_generic_functions[expectedMethodName];
-                    if (fn) {
-                        auto funcVar = std::make_unique<VarExpr>();
-                        funcVar->loc = mem->loc;
-                        funcVar->name = expectedMethodName;
-                        std::unique_ptr<Expr> selfArg = std::move(mem->object);
-                        if (!fn->params.empty()) {
-                            Type* expectedSelfType = resolveType(fn->params[0].parsedType);
-                            if (expectedSelfType && expectedSelfType->isPointer() && !isPtr) {
-                                auto addrOf = std::make_unique<AddrOfExpr>();
-                                addrOf->loc = selfArg->loc;
-                                addrOf->operand = std::move(selfArg);
-                                selfArg = std::move(addrOf);
-                                checkExpr(*selfArg);
-                            }
-                            else if (expectedSelfType && !expectedSelfType->isPointer() && isPtr) {
-                                auto deref = std::make_unique<DerefExpr>();
-                                deref->loc = selfArg->loc;
-                                deref->operand = std::move(selfArg);
-                                selfArg = std::move(deref);
-                                checkExpr(*selfArg);
-                            }
-                        }
-                        call->args.insert(call->args.begin(), std::move(selfArg));
-                        call->callee = std::move(funcVar);
+                checkExpr(*mem);
+                if (mem->isMethod) {
+                    FunctionDecl* fn = mem->resolvedMethod;
+                    std::unique_ptr<Expr> selfArg = cloneExpr(mem->object.get(), {});
+                    Type* expectedSelfType = resolveType(fn->params[0].parsedType);
+                    bool isPtr = mem->object->type->isPointer();
+                    if (expectedSelfType && expectedSelfType->isPointer() && !isPtr) {
+                        auto addrOf = std::make_unique<AddrOfExpr>();
+                        addrOf->loc = selfArg->loc;
+                        addrOf->operand = std::move(selfArg);
+                        selfArg = std::move(addrOf);
                     }
+                    else if (expectedSelfType && !expectedSelfType->isPointer() && isPtr) {
+                        auto deref = std::make_unique<DerefExpr>();
+                        deref->loc = selfArg->loc;
+                        deref->operand = std::move(selfArg);
+                        selfArg = std::move(deref);
+                    }
+                    checkExpr(*selfArg);
+                    call->args.insert(call->args.begin(), std::move(selfArg));
+                    call->type = fn->returnTypeResolved ? fn->returnTypeResolved : &TypeVoid;
+                    return;
                 }
             }
             if (auto var = dynamic_cast<VarExpr*>(call->callee.get())) {
@@ -1600,7 +1797,12 @@ namespace gbpp {
                         auto& arg = call->args[i];
                         if (!hasExpand && i < targetFn->params.size()) {
                             if (targetFn->isVariadic && i >= targetFn->params.size() - 1) continue;
+
                             Type* expectedParam = targetFn->params[i].resolvedType;
+                            if (!typesCompatible(expectedParam, arg->type)) {
+                                error(call->loc, "Type mismatch for param '" + targetFn->params[i].name + "'");
+                            }
+                            if (targetFn->isVariadic && i >= targetFn->params.size() - 1) continue;
                             if (expectedParam && expectedParam->name.starts_with("heap ")) {
                                 if (auto argVar = dynamic_cast<VarExpr*>(arg.get())) {
                                     for (Scope* s = m_currentScope; s; s = s->parent) {

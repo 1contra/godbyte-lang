@@ -55,7 +55,9 @@
       }
     ],
     "configurationDefaults": {
-      "editor.semanticTokenColorCustomizations": {}
+      "workbench.colorCustomizations": {
+        "editorUnnecessaryCode.opacity": "#0000007f"
+      }
     }
   },
   "dependencies": {

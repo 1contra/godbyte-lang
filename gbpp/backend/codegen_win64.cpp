@@ -1373,23 +1373,41 @@ namespace gbpp {
                             }
                             targetLabel = sanitizeLabel(fn.name) + "_" + targetLabel;
 
-                            if (prevInst &&
-                                (prevInst->op == OpCode::CMP_EQ || prevInst->op == OpCode::CMP_NE ||
-                                    prevInst->op == OpCode::CMP_LT || prevInst->op == OpCode::CMP_GT ||
-                                    prevInst->op == OpCode::CMP_LE || prevInst->op == OpCode::CMP_GE) &&
-                                prevInst->dest == inst.src1) {
+                            const Instruction* condDef = defs.count(inst.src1) ? defs[inst.src1] : nullptr;
+                            bool isImmediateCmp = prevInst && prevInst == condDef;
 
-                                if (!mb.insts.empty() && mb.insts.back().opcode == MInstOpcode::X86_MOVZX) mb.insts.pop_back();
-                                if (!mb.insts.empty() && mb.insts.back().opcode >= MInstOpcode::X86_SETL && mb.insts.back().opcode <= MInstOpcode::X86_SETLE) mb.insts.pop_back();
+                            if (condDef &&
+                                (condDef->op == OpCode::CMP_EQ || condDef->op == OpCode::CMP_NE ||
+                                    condDef->op == OpCode::CMP_LT || condDef->op == OpCode::CMP_GT ||
+                                    condDef->op == OpCode::CMP_LE || condDef->op == OpCode::CMP_GE)) {
+
+                                if (isImmediateCmp) {
+                                    if (!mb.insts.empty() && mb.insts.back().opcode == MInstOpcode::X86_MOVZX) mb.insts.pop_back();
+                                    if (!mb.insts.empty() && mb.insts.back().opcode >= MInstOpcode::X86_SETL && mb.insts.back().opcode <= MInstOpcode::X86_SETLE) mb.insts.pop_back();
+                                }
+                                else {
+                                    int opSize = 8;
+                                    if (condDef->src1 != -1 && defs.count(condDef->src1)) opSize = defs[condDef->src1]->bytes;
+                                    auto left = resolveOp(condDef->src1, opSize);
+                                    auto right = condDef->src2 == -1 ? MachineOperand::createImm(condDef->imm, opSize) : resolveOp(condDef->src2, opSize);
+                                    if (left.isMem() || left.isImm()) {
+                                        auto r10 = MachineOperand::createReg(REG_R10, opSize);
+                                        if (left.isImm()) mb.insts.push_back({ MInstOpcode::X86_MOVri, { r10, left } });
+                                        else mb.insts.push_back({ MInstOpcode::X86_MOVrm, { r10, left } });
+                                        left = r10;
+                                    }
+                                    if (right.isImm()) mb.insts.push_back({ MInstOpcode::X86_CMPri, { left, right } });
+                                    else if (right.isMem()) mb.insts.push_back({ MInstOpcode::X86_CMPrm, { left, right } });
+                                    else mb.insts.push_back({ MInstOpcode::X86_CMPrr, { left, right } });
+                                }
 
                                 MInstOpcode jmpOp;
-                                if (prevInst->op == OpCode::CMP_EQ) jmpOp = MInstOpcode::X86_JNE;
-                                else if (prevInst->op == OpCode::CMP_NE) jmpOp = MInstOpcode::X86_JE;
-                                else if (prevInst->op == OpCode::CMP_LT) jmpOp = MInstOpcode::X86_JGE;
-                                else if (prevInst->op == OpCode::CMP_GT) jmpOp = MInstOpcode::X86_JLE;
-                                else if (prevInst->op == OpCode::CMP_LE) jmpOp = MInstOpcode::X86_JG;
+                                if (condDef->op == OpCode::CMP_EQ) jmpOp = MInstOpcode::X86_JNE;
+                                else if (condDef->op == OpCode::CMP_NE) jmpOp = MInstOpcode::X86_JE;
+                                else if (condDef->op == OpCode::CMP_LT) jmpOp = MInstOpcode::X86_JGE;
+                                else if (condDef->op == OpCode::CMP_GT) jmpOp = MInstOpcode::X86_JLE;
+                                else if (condDef->op == OpCode::CMP_LE) jmpOp = MInstOpcode::X86_JG;
                                 else jmpOp = MInstOpcode::X86_JL;
-
                                 mb.insts.push_back({ jmpOp, { MachineOperand::createLabel(targetLabel) } });
                             }
                             else {

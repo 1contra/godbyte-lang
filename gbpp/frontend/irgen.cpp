@@ -51,7 +51,13 @@ namespace gbpp {
                 std::string sName = v->resolvedType->name;
                 if (m_structMap.count(sName)) {
                     int maxSz = 0;
-                    for (auto& f : m_structMap[sName]->fields) maxSz = std::max(maxSz, f.offset + 8);
+                    for (auto& f : m_structMap[sName]->fields) {
+                        int fSize = 8;
+                        if (f.parsedType.baseName == "u16" || f.parsedType.baseName == "i16") fSize = 2;
+                        else if (f.parsedType.baseName == "u32" || f.parsedType.baseName == "i32" || f.parsedType.baseName == "f32") fSize = 4;
+                        else if (f.parsedType.baseName == "u8" || f.parsedType.baseName == "i8" || f.parsedType.baseName == "bool") fSize = 1;
+                        maxSz = std::max(maxSz, f.offset + fSize);
+                    }
                     size = maxSz;
                 }
                 else size = 128;
@@ -62,12 +68,57 @@ namespace gbpp {
         for (const auto& st : prog.structs) {
             if (st->genericParams.empty() || st->name.find('$') != std::string::npos) {
                 m_structMap[st->name] = st.get();
+                if (st->isPolymorphic) {
+                    m_module.globals.push_back({ "__vtable_" + st->name, 0, (int)(st->vtableLayout.size() * 8) });
+                }
             }
         }
 
         for (const auto& fn : prog.functions) {
             if (fn->genericParams.empty() || fn->name.find('$') != std::string::npos) {
                 genFunction(*fn);
+            }
+        }
+
+        IRFunction vtableInitFn;
+        vtableInitFn.name = "__gbpp_init_vtables";
+        vtableInitFn.isInline = false;
+        m_currentFunc = &vtableInitFn;
+        BasicBlock* initBlock = vtableInitFn.createBlock(".L_entry");
+        m_currentBlock = initBlock;
+
+        for (const auto& st : prog.structs) {
+            if (st->isPolymorphic && (st->genericParams.empty() || st->name.find('$') != std::string::npos)) {
+                int vtableAddr = vtableInitFn.allocVReg();
+                Instruction loadVtable = { OpCode::LOAD_STR, vtableAddr, -1, -1, 0, 8 };
+                loadVtable.label = "__vtable_" + st->name;
+                emit(loadVtable);
+
+                for (size_t i = 0; i < st->vtableLayout.size(); ++i) {
+                    int funcAddr = vtableInitFn.allocVReg();
+                    Instruction loadFunc = { OpCode::LOAD_STR, funcAddr, -1, -1, 0, 8 };
+                    loadFunc.label = st->vtableLayout[i]->name;
+                    emit(loadFunc);
+
+                    int slotAddr = vtableInitFn.allocVReg();
+                    emit({ OpCode::ADD, slotAddr, vtableAddr, -1, (uint64_t)(i * 8), 8 });
+                    emit({ OpCode::STORE, -1, slotAddr, funcAddr, 0, 8 });
+                }
+            }
+        }
+        emit({ OpCode::RET, -1, -1 });
+
+        if (initBlock->instructions.size() > 1) {
+            m_module.functions.push_back(std::move(vtableInitFn));
+            for (auto& fn : m_module.functions) {
+                if (fn.name == "main" || fn.name == "_start") {
+                    if (!fn.blocks.empty()) {
+                        int dummy = fn.allocVReg();
+                        Instruction callInit = { OpCode::CALL, dummy, -1, -1, 0, 8 };
+                        callInit.label = "__gbpp_init_vtables";
+                        fn.blocks[0]->instructions.insert(fn.blocks[0]->instructions.begin(), callInit);
+                    }
+                }
             }
         }
 
@@ -203,7 +254,13 @@ namespace gbpp {
                 std::string sName = decl->resolvedType->name;
                 if (m_structMap.count(sName)) {
                     int maxSz = 0;
-                    for (auto& f : m_structMap[sName]->fields) maxSz = std::max(maxSz, f.offset + 8);
+                    for (auto& f : m_structMap[sName]->fields) {
+                        int fSize = 8;
+                        if (f.parsedType.baseName == "u16" || f.parsedType.baseName == "i16") fSize = 2;
+                        else if (f.parsedType.baseName == "u32" || f.parsedType.baseName == "i32" || f.parsedType.baseName == "f32") fSize = 4;
+                        else if (f.parsedType.baseName == "u8" || f.parsedType.baseName == "i8" || f.parsedType.baseName == "bool") fSize = 1;
+                        maxSz = std::max(maxSz, f.offset + fSize);
+                    }
                     size = maxSz;
                 }
                 else {
@@ -471,10 +528,7 @@ namespace gbpp {
     int IRGenerator::genExpr(const Expr& expr) {
         t_currentLoc = expr.loc;
 
-        if (expr.type && expr.type->scalar == ScalarType::FunctionPtr) {
-            
-        }
-        else if (auto lit = dynamic_cast<const IntLiteral*>(&expr)) {
+        if (auto lit = dynamic_cast<const IntLiteral*>(&expr)) {
             int d = m_currentFunc->allocVReg();
             int size = lit->type ? lit->type->sizeBytes : 8;
             uint64_t val = 0;
@@ -513,31 +567,38 @@ namespace gbpp {
         else if (auto sInit = dynamic_cast<const StructInitExpr*>(&expr)) {
             int dest = m_currentFunc->allocVReg();
             int size = sInit->type ? sInit->type->sizeBytes : 8;
-
             if (size == 0) {
                 std::string sName = sInit->type->name;
                 if (m_structMap.count(sName)) {
                     int maxSz = 0;
-                    for (auto& f : m_structMap[sName]->fields) maxSz = std::max(maxSz, f.offset + 8);
+                    for (auto& f : m_structMap[sName]->fields) {
+                        int fSize = 8;
+                        if (f.parsedType.baseName == "u16" || f.parsedType.baseName == "i16") fSize = 2;
+                        else if (f.parsedType.baseName == "u32" || f.parsedType.baseName == "i32" || f.parsedType.baseName == "f32") fSize = 4;
+                        else if (f.parsedType.baseName == "u8" || f.parsedType.baseName == "i8" || f.parsedType.baseName == "bool") fSize = 1;
+                        maxSz = std::max(maxSz, f.offset + fSize);
+                    }
                     size = maxSz;
                 }
                 else size = 128;
             }
-
             emit({ OpCode::ALLOC, dest, -1, -1, (uint64_t)size });
+
+            StructDecl* st = m_structMap.count(sInit->type->name) ? m_structMap[sInit->type->name] : nullptr;
+            if (st && st->isPolymorphic) {
+                int vtableAddr = m_currentFunc->allocVReg();
+                Instruction loadVtable = { OpCode::LOAD_STR, vtableAddr, -1, -1, 0, 8 };
+                loadVtable.label = "__vtable_" + st->name;
+                emit(loadVtable);
+                emit({ OpCode::STORE, -1, dest, vtableAddr, 0, 8 });
+            }
 
             for (const auto& fInit : sInit->fields) {
                 int valReg = genExpr(*fInit.value);
                 int offset = getOffset(sInit->type, fInit.name);
                 int addrReg = m_currentFunc->allocVReg();
-
-                if (offset >= 0) {
-                    emit({ OpCode::ADD, addrReg, dest, -1, (uint64_t)offset, 8 });
-                }
-                else {
-                    emit({ OpCode::MOV, addrReg, dest, -1, 0, 8 });
-                }
-
+                if (offset >= 0) emit({ OpCode::ADD, addrReg, dest, -1, (uint64_t)offset, 8 });
+                else emit({ OpCode::MOV, addrReg, dest, -1, 0, 8 });
                 int fSize = fInit.value->type ? fInit.value->type->sizeBytes : 8;
                 emit({ OpCode::STORE, -1, addrReg, valReg, 0, fSize });
             }
@@ -643,7 +704,15 @@ namespace gbpp {
                 int callRes = genExpr(*arr->overloadedCall);
                 Type* callRetType = arr->overloadedCall->type;
                 if (callRetType && callRetType->isPointer()) {
-                    return callRes;
+                    if (arr->type && (arr->type->isArray || arr->type->scalar == ScalarType::Struct)) {
+                        return callRes;
+                    }
+                    int res = m_currentFunc->allocVReg();
+                    int elementSize = arr->type ? arr->type->sizeBytes : 8;
+                    Instruction inst = { OpCode::LOAD, res, callRes, -1, 0, elementSize };
+                    if (arr->type && arr->type->isVolatile) inst.isVolatile = true;
+                    emit(inst);
+                    return res;
                 }
                 else {
                     std::cerr << "[IRGen Error] Cannot take address of overloaded operator[] that returns by value.\n";
@@ -665,12 +734,14 @@ namespace gbpp {
             int addr = m_currentFunc->allocVReg();
             emit({ OpCode::ADD, addr, base, scaledIndex });
 
-            int res = m_currentFunc->allocVReg();
+            if (arr->type && (arr->type->isArray || arr->type->scalar == ScalarType::Struct)) {
+                return addr;
+            }
 
+            int res = m_currentFunc->allocVReg();
             Instruction inst = { OpCode::LOAD, res, addr, -1, 0, elementSize };
             if (arr->type && arr->type->isVolatile) inst.isVolatile = true;
             emit(inst);
-
             return res;
         }
         else if (auto builtin = dynamic_cast<const BuiltinCallExpr*>(&expr)) {
@@ -774,7 +845,13 @@ namespace gbpp {
                 std::string sName = sizeExpr->resolvedTargetType->name;
                 if (m_structMap.count(sName)) {
                     int maxSz = 0;
-                    for (auto& f : m_structMap[sName]->fields) maxSz = std::max(maxSz, f.offset + 8);
+                    for (auto& f : m_structMap[sName]->fields) {
+                        int fSize = 8;
+                        if (f.parsedType.baseName == "u16" || f.parsedType.baseName == "i16") fSize = 2;
+                        else if (f.parsedType.baseName == "u32" || f.parsedType.baseName == "i32" || f.parsedType.baseName == "f32") fSize = 4;
+                        else if (f.parsedType.baseName == "u8" || f.parsedType.baseName == "i8" || f.parsedType.baseName == "bool") fSize = 1;
+                        maxSz = std::max(maxSz, f.offset + fSize);
+                    }
                     structSize = maxSz;
                 }
             }
@@ -782,7 +859,38 @@ namespace gbpp {
             emit({ OpCode::CONST, d, -1, -1, structSize, 8 });
             return d;
         }
+        else if (auto idxExpr = dynamic_cast<const IndexOfExpr*>(&expr)) {
+            int d = m_currentFunc->allocVReg();
+            int offset = getOffset(idxExpr->resolvedTargetType, idxExpr->fieldName);
+            emit({ OpCode::CONST, d, -1, -1, (uint64_t)offset, 8 });
+            return d;
+        }
         else if (auto mem = dynamic_cast<const MemberExpr*>(&expr)) {
+            if (mem->isMethod) {
+                int base = -1;
+                if (auto deref = dynamic_cast<const DerefExpr*>(mem->object.get())) base = genExpr(*deref->operand);
+                else base = genExpr(*mem->object);
+
+                if (mem->resolvedMethod->isVirtual || mem->resolvedMethod->isOverride) {
+                    int vptr = m_currentFunc->allocVReg();
+                    emit({ OpCode::LOAD, vptr, base, -1, 0, 8 });
+
+                    int func_addr_ptr = m_currentFunc->allocVReg();
+                    emit({ OpCode::ADD, func_addr_ptr, vptr, -1, (uint64_t)(mem->resolvedMethod->vtableIndex * 8), 8 });
+
+                    int func_ptr = m_currentFunc->allocVReg();
+                    emit({ OpCode::LOAD, func_ptr, func_addr_ptr, -1, 0, 8 });
+
+                    return func_ptr;
+                }
+                else {
+                    int func_ptr = m_currentFunc->allocVReg();
+                    Instruction addrInst = { OpCode::LOAD_STR, func_ptr, -1, -1, 0, 8 };
+                    addrInst.label = mem->resolvedMethod->name;
+                    emit(addrInst);
+                    return func_ptr;
+                }
+            }
             int base = -1;
 
             if (auto varObj = dynamic_cast<const VarExpr*>(mem->object.get())) {
@@ -812,6 +920,27 @@ namespace gbpp {
                 exit(1);
             }
 
+            if (mem->isMethod) {
+                if (mem->resolvedMethod->isVirtual || mem->resolvedMethod->isOverride) {
+                    int vptr = m_currentFunc->allocVReg();
+                    emit({ OpCode::LOAD, vptr, base, -1, 0, 8 });
+
+                    int func_addr_ptr = m_currentFunc->allocVReg();
+                    emit({ OpCode::ADD, func_addr_ptr, vptr, -1, (uint64_t)(mem->resolvedMethod->vtableIndex * 8), 8 });
+
+                    int func_ptr = m_currentFunc->allocVReg();
+                    emit({ OpCode::LOAD, func_ptr, func_addr_ptr, -1, 0, 8 });
+                    return func_ptr;
+                }
+                else {
+                    int func_ptr = m_currentFunc->allocVReg();
+                    Instruction addrInst = { OpCode::LOAD_STR, func_ptr, -1, -1, 0, 8 };
+                    addrInst.label = mem->resolvedMethod->name;
+                    emit(addrInst);
+                    return func_ptr;
+                }
+            }
+
             int offset = getOffset(mem->object->type, mem->memberName);
             int addr = m_currentFunc->allocVReg();
 
@@ -822,7 +951,9 @@ namespace gbpp {
                 emit({ OpCode::MOV, addr, base, -1, 0, 8 });
             }
 
-            if (mem->type && mem->type->isArray) return addr;
+            if (mem->type && (mem->type->isArray || mem->type->scalar == ScalarType::Struct)) {
+                return addr;
+            }
 
             int res = m_currentFunc->allocVReg();
             int size = (mem->type) ? mem->type->sizeBytes : 8;
@@ -1119,6 +1250,22 @@ namespace gbpp {
             int d = m_currentFunc->allocVReg();
             bool isFloat = bin->type && bin->type->isFloatingPoint();
             int size = bin->type ? bin->type->sizeBytes : 8;
+
+            if ((bin->op == TokenType::Plus || bin->op == TokenType::Minus) &&
+                bin->left->type && bin->left->type->isPointer() &&
+                bin->right->type && bin->right->type->isInteger()) {
+                int elementSize = bin->left->type->base ? bin->left->type->base->sizeBytes : 1;
+                int r64 = m_currentFunc->allocVReg();
+                emit({ OpCode::CAST, r64, r, -1, 8 });
+                if (elementSize > 1) {
+                    int scaledR = m_currentFunc->allocVReg();
+                    emit({ OpCode::MUL, scaledR, r64, -1, (uint64_t)elementSize, 8 });
+                    r = scaledR;
+                }
+                else {
+                    r = r64;
+                }
+            }
             OpCode op = OpCode::ADD;
 
             switch (bin->op) {
@@ -1149,7 +1296,7 @@ namespace gbpp {
             return d;
         }
 
-        if (auto call = dynamic_cast<const CallExpr*>(&expr)) {
+        else if (auto call = dynamic_cast<const CallExpr*>(&expr)) {
             std::vector<int> argRegs;
             std::vector<int> argBytes;
 
@@ -1181,7 +1328,20 @@ namespace gbpp {
                     inst.src1 = genExpr(*call->callee);
                 }
             }
-            else {
+            else if (auto mem = dynamic_cast<const MemberExpr*>(call->callee.get())) {
+                if (mem->isMethod && !mem->resolvedMethod->isVirtual && !mem->resolvedMethod->isOverride) {
+                    inst.label = mem->resolvedMethod->name;
+                    for (const auto& fn : m_module.functions) {
+                        if (fn.name == inst.label && fn.isInline) {
+                            isInlineFunctionCall = true;
+                            break;
+                        }
+                    }
+                }
+                else {
+                    inst.src1 = genExpr(*call->callee);
+                }
+            } else {
                 inst.src1 = genExpr(*call->callee);
             }
 

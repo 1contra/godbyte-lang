@@ -54,6 +54,9 @@ namespace gbpp {
 
         void enterScope();
         void exitScope();
+        void populateAllMethods(StructDecl* st);
+        bool isSubclass(Type* derived, Type* base);
+        bool typesCompatible(Type* expected, Type* actual);
         bool declareVariable(const std::string& name, Type* type, SourceLoc loc, const std::vector<Attribute>& attrs);
         bool declareVariable(const std::string& name, Type* type, SourceLoc loc);
         Type* lookupVariable(const std::string& name);

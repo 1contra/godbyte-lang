@@ -111,8 +111,11 @@ namespace gbpp {
         }
     };
 
+    enum class AccessModifier { Public, Private };
+
     struct Expr;
     struct Stmt;
+    struct FunctionDecl;
 
     struct ASTNode {
         SourceLoc loc;
@@ -183,6 +186,12 @@ namespace gbpp {
         Type* resolvedTargetType = nullptr;
     };
 
+    struct IndexOfExpr : Expr {
+        ParsedType parsedTargetType;
+        Type* resolvedTargetType = nullptr;
+        std::string fieldName;
+    };
+
     enum class CastKind { Value, Bits };
     struct CastExpr : Expr {
         CastKind castKind;
@@ -199,6 +208,8 @@ namespace gbpp {
     struct MemberExpr : Expr {
         std::unique_ptr<Expr> object;
         std::string memberName;
+        bool isMethod = false;
+        FunctionDecl* resolvedMethod = nullptr;
     };
 
     struct AssignmentExpr : Expr {
@@ -271,6 +282,10 @@ namespace gbpp {
         bool isOperator = false;
         TokenType operatorKind = TokenType::EndOfFile;
         std::string parentStructName = "";
+        AccessModifier access = AccessModifier::Public;
+        bool isVirtual = false;
+        bool isOverride = false;
+        int vtableIndex = -1;
         struct Param {
             std::string name;
             ParsedType parsedType;
@@ -293,11 +308,17 @@ namespace gbpp {
         std::vector<GenericParam> genericParams;
         std::vector<Attribute> attributes;
         std::string name;
+        std::string parentName = "";
+        bool isPolymorphic = false;
+        bool allMethodsPopulated = false;
+        std::vector<FunctionDecl*> vtableLayout;
+        std::vector<FunctionDecl*> allMethods;
         struct Field {
             std::string name;
             ParsedType parsedType;
             int offset;
             std::vector<Attribute> attributes;
+            AccessModifier access = AccessModifier::Public;
         };
         std::vector<Field> fields;
         std::vector<std::unique_ptr<FunctionDecl>> methods;

@@ -17,8 +17,10 @@ namespace gbpp {
         HashImport, Lib,
 
         Fn, Return, Struct, Enum, Alias,
+        Extends, Public, Private, Virtual, Override,
         Operator,
         Sizeof,
+        IndexOf,
         Owner, Ref,
         PipePipe,
         AmpAmp,
